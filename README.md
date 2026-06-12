@@ -6,7 +6,7 @@ A receive-only FT8 propagation monitor for Reticulum/LXMF networks. Monitoring n
 
 ### Status
 
-This project is alpha status, initial development. Things will likely change. Real world testing required.
+This project is beta status. More real world testing required.
 
 ### How it works
 
