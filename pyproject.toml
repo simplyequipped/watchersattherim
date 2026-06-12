@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watchersattherim"
+version = "0.1.0"
+description = "FT8 propagation path monitor"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "rns>=1.1",
+    "lxmf>=0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+watr = "watchersattherim.monitor.cli:main"
+watr-monitor = "watchersattherim.monitor.cli:main"
+watr-collector = "watchersattherim.collector.cli:main"
+watr-query = "watchersattherim.query.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["watchersattherim*"]
+
+[tool.setuptools.package-data]
+"watchersattherim.collector.nomadnet" = ["*.mu", "*.md"]
