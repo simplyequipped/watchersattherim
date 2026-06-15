@@ -171,7 +171,7 @@ def _seed(conn):
 def test_path_query_with_grid_prefix():
     conn = db()
     _seed(conn)
-    res = queries.path_query(conn, tx_grid="FN42", rx_grid="FN19", now=NOW, hours=4)
+    res = queries.path_query(conn, tx_grid="FN42", rx_grid="FN19", now=NOW, window_sec=14400)
     # FN42 prefix matches both FN42 and FN42AB
     assert res["summary"]["count"] == 2
     assert res["summary"]["snr_min"] == -15 and res["summary"]["snr_max"] == -5
@@ -188,7 +188,7 @@ def test_from_and_to_grid():
 def test_band_activity():
     conn = db()
     _seed(conn)
-    res = queries.band_activity(conn, band="40m", now=NOW, hours=4)
+    res = queries.band_activity(conn, band="40m", now=NOW, window_sec=14400)
     assert res["summary"]["count"] == 1
     assert res["summary"]["indirect_count"] == 1
 
@@ -239,6 +239,9 @@ def test_config_defaults(tmp_path):
     assert c.maintenance_hour == 3
     assert c.database_path.endswith("collector.db")
     assert c.database_path.endswith("/.watchersattherim/collector/collector.db")
+    assert c.propagation.enabled is True and c.propagation.default_timezone == "UTC"
+    assert c.propagation.max_radius_km == 5000 and c.propagation.max_cells == 2000
+    assert c.propagation.max_window_sec == 90 * 86400
 
 
 def test_config_allowlist_and_durations(tmp_path):
@@ -275,9 +278,34 @@ def test_dispatch_commands():
     _seed(conn)
     s = Stats(conn)
     s.refresh(now=NOW)
-    assert dispatch(conn, s, "from_grid", {"grid": "FN42"}, now=NOW)["summary"]["count"] == 2
-    assert dispatch(conn, s, "monitor_list", {}, now=NOW)["monitors"]
+    assert dispatch(conn, s, "from", {"grid": "FN42"}, now=NOW)["summary"]["count"] == 2
+    assert dispatch(conn, s, "monitors", {}, now=NOW)["monitors"]
     assert dispatch(conn, s, "stats", {}, now=NOW)["total_observations"] == 3
+
+
+def test_dispatch_propagation():
+    from watchersattherim.propagation.config import PropagationConfig
+    conn = db()
+    _seed(conn)
+    s = Stats(conn)
+    prop = PropagationConfig()
+    r = dispatch(conn, s, "channel", {"origin": "FN42", "dest": "FN19"}, now=NOW, propagation=prop)
+    assert r["ranked"] == ["20m"] and r["origin"]["grid"] == "FN42"
+    m = dispatch(conn, s, "map", {"origin": "FN19", "band": "20m", "radius": "5000"},
+                 now=NOW, propagation=prop)
+    assert "cells" in m
+    t = dispatch(conn, s, "trend/path/hour", {"origin": "FN42", "dest": "FN19"},
+                 now=NOW, propagation=prop)
+    assert "bands" in t and t["unit"] == "hour"
+
+
+def test_dispatch_propagation_disabled():
+    from watchersattherim.propagation.config import PropagationConfig
+    conn = db()
+    with pytest.raises(CommandError) as e:
+        dispatch(conn, Stats(conn), "channel", {"origin": "FN42", "dest": "FN19"},
+                 now=NOW, propagation=PropagationConfig(enabled=False))
+    assert e.value.code == INVALID_COMMAND
 
 
 def test_dispatch_unknown_command():
@@ -290,26 +318,32 @@ def test_dispatch_unknown_command():
 def test_dispatch_missing_param():
     conn = db()
     with pytest.raises(CommandError) as e:
-        dispatch(conn, Stats(conn), "path_query", {"tx_grid": "FN42"}, now=NOW)
+        dispatch(conn, Stats(conn), "path", {"origin": "FN42"}, now=NOW)
     assert e.value.code == INVALID_PARAMS
 
 
 def test_dispatch_bad_address():
     conn = db()
     with pytest.raises(CommandError) as e:
-        dispatch(conn, Stats(conn), "monitor_info", {"address": "zzzz"}, now=NOW)
+        dispatch(conn, Stats(conn), "monitor", {"address": "zzzz"}, now=NOW)
     assert e.value.code == INVALID_PARAMS
 
 
 # --- http routing ---------------------------------------------------------
 
 @pytest.mark.parametrize("path,expected", [
-    ("/api/v1/path", "path_query"),
-    ("/api/v1/from", "from_grid"),
-    ("/api/v1/to", "to_grid"),
-    ("/api/v1/band", "band_activity"),
-    ("/api/v1/monitors", "monitor_list"),
+    ("/api/v1/path", "path"),
+    ("/api/v1/from", "from"),
+    ("/api/v1/to", "to"),
+    ("/api/v1/band", "band"),
+    ("/api/v1/monitors", "monitors"),
     ("/api/v1/stats", "stats"),
+    ("/api/v1/channel", "channel"),
+    ("/api/v1/channel/anomaly", "channel/anomaly"),
+    ("/api/v1/trend/path/hour", "trend/path/hour"),
+    ("/api/v1/trend/band/month", "trend/band/month"),
+    ("/api/v1/map", "map"),
+    ("/api/v1/coverage", "coverage"),
 ])
 def test_http_route_endpoints(path, expected):
     command, _ = http.route(path, {})
@@ -318,7 +352,7 @@ def test_http_route_endpoints(path, expected):
 
 def test_http_route_monitor_info():
     command, params = http.route("/api/v1/monitors/aabb", {})
-    assert command == "monitor_info" and params["address"] == "aabb"
+    assert command == "monitor" and params["address"] == "aabb"
 
 
 def test_http_route_unknown():
@@ -353,3 +387,5 @@ def test_full_collector_example_exercises_options():
     assert c.reject_future_skew_sec == 120
     assert c.stats_refresh_sec == 120
     assert c.maintenance_hour == 4
+    assert c.propagation.enabled is True and c.propagation.default_timezone == "UTC"
+    assert c.propagation.max_radius_km == 5000 and c.propagation.max_window_sec == 90 * 86400

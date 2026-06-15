@@ -1,8 +1,10 @@
 """Read-only HTTP/REST query surface, stdlib only.
 
 Uses the stdlib ``http.server`` to keep the collector dependency-free; a thin
-adapter over ``commands.dispatch``, trivially swappable. Observations enter only
-via LXMF, so this surface is read-only.
+adapter over ``commands.dispatch``. The route tail under ``/api/v1`` is the
+command name (so ``/api/v1/trend/path/hour`` -> ``trend/path/hour``), with the
+single exception of ``/api/v1/monitors/<address>`` -> ``monitor``. Observations
+enter only via LXMF, so this surface is read-only.
 """
 
 from __future__ import annotations
@@ -14,32 +16,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .commands import (
-    INTERNAL_ERROR, INVALID_COMMAND, INVALID_PARAMS, CommandError, dispatch,
+    COMMANDS, INTERNAL_ERROR, INVALID_COMMAND, INVALID_PARAMS, CommandError, dispatch,
 )
+from ..propagation.config import PropagationConfig
 
 API = "/api/v1"
-
-_ROUTES = {
-    f"{API}/path": "path_query",
-    f"{API}/from": "from_grid",
-    f"{API}/to": "to_grid",
-    f"{API}/band": "band_activity",
-    f"{API}/monitors": "monitor_list",
-    f"{API}/stats": "stats",
-}
+_ROUTABLE = set(COMMANDS) - {"monitor"}
+_MONITORS = "monitors/"
 
 
 def route(path: str, params: dict) -> tuple[str, dict]:
     """Map an HTTP path + query params to a (command, params) pair."""
-    if path in _ROUTES:
-        return _ROUTES[path], params
-    prefix = f"{API}/monitors/"
-    if path.startswith(prefix) and path[len(prefix):]:
-        return "monitor_info", {**params, "address": path[len(prefix):]}
+    prefix = f"{API}/"
+    if not path.startswith(prefix):
+        raise CommandError(INVALID_COMMAND, f"no such endpoint: {path}")
+    rest = path[len(prefix):]
+    if rest in _ROUTABLE:
+        return rest, params
+    if rest.startswith(_MONITORS) and rest[len(_MONITORS):]:
+        return "monitor", {**params, "address": rest[len(_MONITORS):]}
     raise CommandError(INVALID_COMMAND, f"no such endpoint: {path}")
 
 
-def make_handler(conn, lock: threading.Lock, stats, clock=time.time):
+def make_handler(conn, lock: threading.Lock, stats, clock=time.time,
+                 propagation: PropagationConfig = None):
+    prop = propagation or PropagationConfig()
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             parsed = urlparse(self.path)
@@ -47,7 +49,8 @@ def make_handler(conn, lock: threading.Lock, stats, clock=time.time):
             try:
                 command, cmd_params = route(parsed.path, params)
                 with lock:
-                    result = dispatch(conn, stats, command, cmd_params, now=int(clock()))
+                    result = dispatch(conn, stats, command, cmd_params,
+                                      now=int(clock()), propagation=prop)
                 self._reply(200, {"ok": True, "result": result})
             except CommandError as e:
                 code = 400 if e.code in (INVALID_COMMAND, INVALID_PARAMS) else 500
@@ -70,5 +73,7 @@ def make_handler(conn, lock: threading.Lock, stats, clock=time.time):
     return Handler
 
 
-def make_server(conn, lock, stats, *, bind="0.0.0.0", port=8080, clock=time.time):
-    return ThreadingHTTPServer((bind, port), make_handler(conn, lock, stats, clock))
+def make_server(conn, lock, stats, *, bind="0.0.0.0", port=8080, clock=time.time,
+                propagation: PropagationConfig = None):
+    return ThreadingHTTPServer(
+        (bind, port), make_handler(conn, lock, stats, clock, propagation))

@@ -68,14 +68,22 @@ def flush_window(
     window_start: int,
     window_end: int,
     cache_size: int = 0,
+    send_empty: bool = True,
 ) -> bool:
     """Build and send a batch of (pending + current) observations.
 
     On success the pending queue and drop counter are cleared. On failure the
     rows return to the pending queue (bounded). The decode counter resets either
     way, since it counts decodes seen in the just-closed window.
+
+    When ``send_empty`` is false and there is nothing to report (no pending
+    backlog and no new observations), no message is sent - a quiet band should
+    not spend RNS traffic on empty batches every window.
     """
     rows = queue.drain() + batcher.take()
+    if not rows and not send_empty:
+        batcher.reset_counters()
+        return True
     batch = build_batch(
         monitor, window_start, window_end, rows,
         decodes_seen=batcher.decodes_seen,

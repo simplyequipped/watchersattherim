@@ -109,6 +109,43 @@ def test_flush_success_clears_and_sends():
     assert batch["stats"]["cache_size"] == 3
 
 
+def test_flush_skips_empty_batch_when_send_empty_false():
+    b = TelemetryBatcher()
+    b.note_decode()                 # decodes seen, but no observations produced
+    q = PendingQueue(max_observations=100)
+    s = FakeSender(ok=True)
+
+    ok = flush_window(batcher=b, queue=q, sender=s,
+                      monitor=monitor_meta("FN19", "sw"),
+                      window_start=0, window_end=60, send_empty=False)
+    assert ok is True               # window closed cleanly
+    assert s.sent == []             # but nothing was transmitted
+    assert b.decodes_seen == 0      # counter still reset
+
+
+def test_flush_empty_still_sends_when_send_empty_true():
+    b = TelemetryBatcher()
+    q = PendingQueue(max_observations=100)
+    s = FakeSender(ok=True)
+    ok = flush_window(batcher=b, queue=q, sender=s,
+                      monitor=monitor_meta("FN19", "sw"),
+                      window_start=0, window_end=60, send_empty=True)
+    assert ok is True and len(s.sent) == 1
+
+
+def test_flush_sends_pending_backlog_even_when_send_empty_false():
+    # A quiet window with nothing new but a pending backlog must still flush.
+    b = TelemetryBatcher()
+    q = PendingQueue(max_observations=100)
+    q.add_many([_obs_row()])
+    s = FakeSender(ok=True)
+    ok = flush_window(batcher=b, queue=q, sender=s,
+                      monitor=monitor_meta("FN19", "sw"),
+                      window_start=0, window_end=60, send_empty=False)
+    assert ok is True and len(s.sent) == 1
+    assert s.sent[0]["stats"]["obs_emitted"] == 1
+
+
 def test_flush_failure_requeues_observations():
     b = TelemetryBatcher()
     b.add(_obs(), ts=1, freq_hz=14074000, band="20m")

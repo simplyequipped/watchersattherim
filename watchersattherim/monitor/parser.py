@@ -133,7 +133,9 @@ def _is_call_or_hash(tok: str) -> bool:
 
 
 def _is_grid(tok: str) -> bool:
-    return bool(_GRID_RE.match(tok))
+    # RR73 satisfies the locator pattern but is the "roger + 73" sign-off, not a
+    # grid; exclude the ack tokens so they are never read as a transmitter location.
+    return tok not in _ACK_TOKENS and bool(_GRID_RE.match(tok))
 
 
 def _report_db(tok: str) -> Optional[int]:

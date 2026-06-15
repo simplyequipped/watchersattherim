@@ -55,6 +55,13 @@ def test_standard_with_report():
     assert m.report_db == -2 and m.grid is None
 
 
+def test_rr73_is_ack_not_grid():
+    # RR73 matches the locator pattern but is the sign-off, not a transmitter grid.
+    m = classify("W3GO K1ABC RR73")
+    assert m.kind is Kind.STANDARD
+    assert m.grid is None and m.report_db is None
+
+
 def test_report_with_r_prefix():
     m = classify("N4DWD KR1ATC RRR")
     assert m.report_db is None  # RRR is an ack, not an SNR

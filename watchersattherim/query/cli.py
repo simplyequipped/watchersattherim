@@ -89,8 +89,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Query a watchersattherim collector over LXMF",
     )
     parser.add_argument("collector", help="collector LXMF address (hex)")
-    parser.add_argument("command", help="query command (path_query, from_grid, to_grid, "
-                                        "band_activity, monitor_list, monitor_info, stats)")
+    parser.add_argument("command", help="query command (path, from, to, band, monitors, "
+                                        "monitor, stats, channel, channel/anomaly, "
+                                        "trend/path/hour, trend/band/hour, map, coverage)")
     parser.add_argument("params", nargs="*", help="key=value query parameters")
     parser.add_argument("--config-dir", help="Reticulum config directory")
     parser.add_argument("--identity", default=DEFAULT_IDENTITY,

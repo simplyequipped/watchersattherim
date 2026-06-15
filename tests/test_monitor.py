@@ -57,7 +57,8 @@ def test_handle_decode_and_flush(tmp_path):
 
 
 def test_non_decode_lines_ignored(tmp_path):
-    cfg = make_config(tmp_path)
+    # send_empty_batches so the (empty) batch is still transmitted and inspectable
+    cfg = make_config(tmp_path, extra="send_empty_batches = true")
     sender = RecordingSender()
     mon = Monitor(cfg, sender, clock=fixed_clock())
     r = cfg.receivers[0]
@@ -109,6 +110,61 @@ def test_flush_failure_requeues_then_recovers(tmp_path):
     assert mon.flush() is True
     assert len(mon.queue) == 0
     assert len(sender.sent[0]["observations"]) == 1
+
+
+class FakeDriver:
+    def __init__(self):
+        self.bounces = 0
+
+    def bounce(self):
+        self.bounces += 1
+
+
+def test_empty_batch_suppressed_by_default(tmp_path):
+    cfg = make_config(tmp_path)            # send_empty_batches defaults False
+    sender = RecordingSender()
+    mon = Monitor(cfg, sender, clock=fixed_clock())
+    r = cfg.receivers[0]
+    mon.handle_line(r, "02:37:00 decodes: 17")    # non-decode, no observations
+    assert mon.flush() is True
+    assert sender.sent == []                # nothing transmitted on an empty window
+
+
+def test_watchdog_restarts_after_silent_cycles(tmp_path):
+    cfg = make_config(tmp_path, extra="[ft8mon]\nrestart_after_silent_cycles = 3\n")
+    mon = Monitor(cfg, RecordingSender(), clock=fixed_clock())
+    drv = FakeDriver()
+    mon._driver_by_band[cfg.receivers[0].band] = drv
+    mon._check_watchdog()
+    mon._check_watchdog()
+    assert drv.bounces == 0                 # not yet at the limit
+    mon._check_watchdog()
+    assert drv.bounces == 1                 # third silent window -> restart
+
+
+def test_watchdog_resets_on_decode(tmp_path):
+    cfg = make_config(tmp_path, extra="[ft8mon]\nrestart_after_silent_cycles = 2\n")
+    mon = Monitor(cfg, RecordingSender(), clock=fixed_clock())
+    r = cfg.receivers[0]
+    drv = FakeDriver()
+    mon._driver_by_band[r.band] = drv
+    mon._check_watchdog()                                       # silent 1
+    mon.handle_line(r, "024015   0 174  1.31 2185.1 CQ  W3GO  FN20")  # a decode
+    mon._check_watchdog()                                       # decode -> reset
+    mon._check_watchdog()                                       # silent 1
+    assert drv.bounces == 0
+    mon._check_watchdog()                                       # silent 2 -> restart
+    assert drv.bounces == 1
+
+
+def test_watchdog_disabled_by_default(tmp_path):
+    cfg = make_config(tmp_path)            # restart_after_silent_cycles defaults 0
+    mon = Monitor(cfg, RecordingSender(), clock=fixed_clock())
+    drv = FakeDriver()
+    mon._driver_by_band[cfg.receivers[0].band] = drv
+    for _ in range(10):
+        mon._check_watchdog()
+    assert drv.bounces == 0
 
 
 def test_verbose_echoes_decodes(tmp_path, capsys):

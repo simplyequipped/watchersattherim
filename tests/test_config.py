@@ -52,6 +52,8 @@ def test_minimal_applies_defaults():
     assert c.cache.max_entries == 10000 and c.cache.ttl_sec == 7200
     assert c.collector.address == "abc123def456"
     assert c.collector.send_interval == 60 and c.collector.delivery == "direct"
+    assert c.collector.send_empty_batches is False
+    assert c.restart_after_silent_cycles == 0
     assert c.storage.dir == "~/.watchersattherim"
 
 
@@ -175,5 +177,7 @@ def test_full_example_exercises_every_option():
     assert c.collector.propagation_node == "fedcba987654"
     assert c.collector.send_interval == 120
     assert c.collector.max_pending_observations == 25000
+    assert c.collector.send_empty_batches is True
+    assert c.restart_after_silent_cycles == 5
     assert c.reticulum.config_dir == "~/.reticulum"
     assert c.storage.dir == "/var/lib/watchersattherim"

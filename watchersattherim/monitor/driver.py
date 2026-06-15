@@ -5,9 +5,10 @@ line-by-line into a callback, and restart it on exit/crash. Knows nothing about
 message formats, so it can be driven against a real ft8mon binary or, in tests,
 a replay command (e.g. ``cat sample.txt``).
 
-ft8mon emits decodes on stdout and ALSA/diagnostic noise on stderr; stderr is
-merged into stdout so the line handler sees everything and skips non-decode
-lines itself.
+ft8mon emits decodes on stdout (verified against ft8mon.cc) and noisy,
+device-dependent ALSA/JACK diagnostics on stderr. We discard stderr so that
+uncontrolled output we have not tested per device can never reach the line
+parser; only stdout is read.
 """
 
 from __future__ import annotations
@@ -49,9 +50,14 @@ class Ft8monDriver:
         return subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            # Discard ft8mon's device-dependent ALSA/JACK noise; only decodes (stdout)
+            # should reach the parser. Run ft8mon directly to inspect its diagnostics.
+            stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            # Defensive: stdout is ASCII in practice, but a stray byte must never
+            # break the read loop (which would wedge the reader in wait()).
+            errors="replace",
         )
 
     def run(self) -> None:
@@ -63,7 +69,12 @@ class Ft8monDriver:
                 for line in proc.stdout:  # type: ignore[union-attr]
                     if self._stop.is_set():
                         break
-                    self.on_line(line.rstrip("\n"))
+                    try:
+                        self.on_line(line.rstrip("\n"))
+                    except Exception as e:  # noqa: BLE001
+                        # One malformed line must never kill the reader and orphan
+                        # a still-running ft8mon; log it and keep consuming output.
+                        self._log(f"line handler error (skipped): {e}")
             finally:
                 rc = self._reap(proc)
 
@@ -87,6 +98,20 @@ class Ft8monDriver:
     def stop(self) -> None:
         """Signal the loop to exit and terminate the running child, if any."""
         self._stop.set()
+        proc = self._proc
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+
+    def bounce(self) -> None:
+        """Terminate the current child without stopping the loop, so it restarts.
+
+        Used by the monitor's no-decode watchdog to recover a ft8mon that is alive
+        but has gone silent (producing no decodes).
+        """
         proc = self._proc
         if proc is not None:
             try:

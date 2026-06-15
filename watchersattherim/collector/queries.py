@@ -9,7 +9,7 @@ from __future__ import annotations
 import statistics
 from typing import Optional
 
-DEFAULT_HOURS = 4
+DEFAULT_WINDOW_SEC = 7200      # 2h
 MAX_OBSERVATIONS = 1000
 
 
@@ -51,37 +51,37 @@ def _result(rows) -> dict:
     return {"observations": [_obs_dict(r) for r in rows[:MAX_OBSERVATIONS]], "summary": summary}
 
 
-def _since(now: int, hours: int) -> int:
-    return now - hours * 3600
+def _since(now: int, window_sec: int) -> int:
+    return now - window_sec
 
 
 def path_query(conn, *, tx_grid: str, rx_grid: str, now: int,
-               hours: int = DEFAULT_HOURS, band: Optional[str] = None) -> dict:
+               window_sec: int = DEFAULT_WINDOW_SEC, band: Optional[str] = None) -> dict:
     where = "tx_grid LIKE ? AND rx_grid LIKE ? AND observed_at >= ?"
-    params = [tx_grid.upper() + "%", rx_grid.upper() + "%", _since(now, hours)]
+    params = [tx_grid.upper() + "%", rx_grid.upper() + "%", _since(now, window_sec)]
     if band:
         where += " AND band = ?"
         params.append(band)
     return _result(_select(conn, where, tuple(params)))
 
 
-def from_grid(conn, *, grid: str, now: int, hours: int = DEFAULT_HOURS) -> dict:
+def from_grid(conn, *, grid: str, now: int, window_sec: int = DEFAULT_WINDOW_SEC) -> dict:
     return _result(_select(
         conn, "tx_grid LIKE ? AND observed_at >= ?",
-        (grid.upper() + "%", _since(now, hours)),
+        (grid.upper() + "%", _since(now, window_sec)),
     ))
 
 
-def to_grid(conn, *, grid: str, now: int, hours: int = DEFAULT_HOURS) -> dict:
+def to_grid(conn, *, grid: str, now: int, window_sec: int = DEFAULT_WINDOW_SEC) -> dict:
     return _result(_select(
         conn, "rx_grid LIKE ? AND observed_at >= ?",
-        (grid.upper() + "%", _since(now, hours)),
+        (grid.upper() + "%", _since(now, window_sec)),
     ))
 
 
-def band_activity(conn, *, band: str, now: int, hours: int = 1) -> dict:
+def band_activity(conn, *, band: str, now: int, window_sec: int = 3600) -> dict:
     return _result(_select(
-        conn, "band = ? AND observed_at >= ?", (band, _since(now, hours)),
+        conn, "band = ? AND observed_at >= ?", (band, _since(now, window_sec)),
     ))
 
 

@@ -82,6 +82,7 @@ class Collector:
     delivery: str = "direct"
     propagation_node: Optional[str] = None
     max_pending_observations: int = 50000
+    send_empty_batches: bool = False
 
 
 @dataclass
@@ -108,6 +109,7 @@ class Config:
     receivers: list[Receiver]
     collector: Collector
     ft8mon_path: str = "ft8mon"
+    restart_after_silent_cycles: int = 0   # 0 disables the no-decode watchdog
     observations: Observations = field(default_factory=Observations)
     cache: Cache = field(default_factory=Cache)
     storage: Storage = field(default_factory=Storage)
@@ -152,6 +154,9 @@ def from_parser(cp: configparser.ConfigParser) -> Config:
         receivers=receivers,
         collector=collector,
         ft8mon_path=os.path.expanduser(cp.get("ft8mon", "path", fallback="ft8mon")),
+        restart_after_silent_cycles=cp.getint(
+            "ft8mon", "restart_after_silent_cycles", fallback=0
+        ),
         observations=obs,
         cache=cache,
         storage=storage,
@@ -247,5 +252,8 @@ def _collector(cp: configparser.ConfigParser) -> Collector:
         propagation_node=node,
         max_pending_observations=cp.getint(
             "collector", "max_pending_observations", fallback=50000
+        ),
+        send_empty_batches=cp.getboolean(
+            "collector", "send_empty_batches", fallback=False
         ),
     )

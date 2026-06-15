@@ -67,6 +67,31 @@ def test_restarts_on_exit():
     assert delays == [5.0, 5.0]      # slept before each restart
 
 
+def test_bad_line_does_not_kill_reader():
+    # A handler that raises on one line must not stop the reader from consuming
+    # the rest (the bug that orphaned a live ft8mon and produced empty batches).
+    seen = []
+
+    def on_line(line):
+        if line == "boom":
+            raise ValueError("bad line")
+        seen.append(line)
+
+    drv = Ft8monDriver(["fake"], on_line=on_line, max_restarts=0,
+                       popen=lambda argv: FakePopen(["a", "boom", "b", "c"]))
+    drv.run()
+    assert seen == ["a", "b", "c"]
+
+
+def test_bounce_terminates_current_child_without_stopping():
+    drv = Ft8monDriver(["fake"], on_line=lambda _l: None)
+    proc = FakePopen([])
+    drv._proc = proc
+    drv.bounce()
+    assert proc.terminated is True       # current child killed
+    assert not drv._stop.is_set()        # but the run loop is NOT stopped
+
+
 def test_stop_terminates_child():
     proc = FakePopen(["x", "y", "z"])
 

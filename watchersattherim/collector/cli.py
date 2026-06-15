@@ -151,7 +151,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     server = None
     if config.http_api:
-        server = http.make_server(conn, lock, stats, bind=config.bind, port=config.http_port)
+        server = http.make_server(conn, lock, stats, bind=config.bind, port=config.http_port,
+                                  propagation=config.propagation)
         threading.Thread(target=server.serve_forever, name="http", daemon=True).start()
         _log(f"HTTP query API on {config.bind}:{config.http_port}")
 

@@ -75,8 +75,14 @@ class Monitor:
 
         self._lock = threading.Lock()
         self._drivers: list[Ft8monDriver] = []
+        self._driver_by_band: dict[str, Ft8monDriver] = {}
         self._stop = threading.Event()
         self._window_start = int(self._clock())
+
+        # No-decode watchdog: restart a ft8mon that is alive but silent.
+        self._silent_limit = config.restart_after_silent_cycles
+        self._window_decodes: dict[str, int] = {}
+        self._silent_cycles: dict[str, int] = {}
 
     # --- per-decode -------------------------------------------------------
 
@@ -89,6 +95,10 @@ class Monitor:
         now = self._clock()
         with self._lock:
             self.batcher.note_decode()
+            if self._silent_limit > 0:
+                self._window_decodes[receiver.band] = (
+                    self._window_decodes.get(receiver.band, 0) + 1
+                )
             observations = process_decode(
                 decode, classify(decode.message),
                 self.config.monitor.grid, self._obs_cache, ts=now,
@@ -108,9 +118,31 @@ class Monitor:
                 batcher=self.batcher, queue=self.queue, sender=self.sender,
                 monitor=self.meta, window_start=self._window_start,
                 window_end=now, cache_size=len(self.cache),
+                send_empty=self.config.collector.send_empty_batches,
             )
             self._window_start = now
         return ok
+
+    def _check_watchdog(self) -> None:
+        """Restart any ft8mon that produced no decodes for too many windows."""
+        if self._silent_limit <= 0:
+            return
+        with self._lock:
+            decodes = dict(self._window_decodes)
+            self._window_decodes.clear()
+        for band, driver in self._driver_by_band.items():
+            if decodes.get(band, 0) > 0:
+                self._silent_cycles[band] = 0
+                continue
+            n = self._silent_cycles.get(band, 0) + 1
+            self._silent_cycles[band] = n
+            if n >= self._silent_limit:
+                self._log(
+                    f"no decodes from ft8mon [{band}] in {n} window(s); "
+                    f"restarting it (check the audio input)"
+                )
+                driver.bounce()
+                self._silent_cycles[band] = 0
 
     # --- lifecycle --------------------------------------------------------
 
@@ -123,6 +155,7 @@ class Monitor:
                 logger=self._log,
             )
             self._drivers.append(driver)
+            self._driver_by_band[receiver.band] = driver
             threading.Thread(
                 target=driver.run, name=f"ft8mon-{receiver.band}", daemon=True
             ).start()
@@ -130,6 +163,7 @@ class Monitor:
 
         while not self._stop.wait(self.config.collector.send_interval):
             self.flush()
+            self._check_watchdog()
         self.flush()
         self._persist()
 

@@ -23,6 +23,14 @@ def parse_duration(value) -> int:
     return int(m[1]) * _UNITS[m[2] or "s"]
 
 
+def fmt_duration(seconds: int) -> str:
+    """Inverse of parse_duration for the largest whole unit ('1800' -> '30m')."""
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds % size == 0 and seconds >= size:
+            return f"{seconds // size}{unit}"
+    return f"{seconds}s"
+
+
 def parser() -> configparser.ConfigParser:
     """A ConfigParser configured the way watchersattherim reads INI files."""
     return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",))

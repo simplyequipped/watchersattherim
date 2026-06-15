@@ -94,6 +94,7 @@ class CollectorListener:
                 result = dispatch(
                     self.conn, self.stats,
                     envelope.get("cmd"), envelope.get("params") or {}, now=now,
+                    propagation=getattr(self.config, "propagation", None),
                 )
             reply = {"v": 1, "request_id": request_id, "ok": True, "result": result}
         except CommandError as e:

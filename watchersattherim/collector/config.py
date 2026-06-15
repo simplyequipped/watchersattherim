@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..common.config import ConfigError, parse_duration, parser
+from ..propagation.config import PropagationConfig
+from ..propagation import config as propagation_config
 
 
 @dataclass
@@ -30,6 +32,11 @@ class CollectorConfig:
     stats_refresh_sec: int = 60
     maintenance_hour: int = 3                  # local hour (0-23) for daily retention
     reticulum_config_dir: Optional[str] = None
+    propagation: PropagationConfig = None
+
+    def __post_init__(self):
+        if self.propagation is None:
+            self.propagation = PropagationConfig()
 
     @property
     def database_path(self) -> str:
@@ -74,4 +81,5 @@ def load(path: str) -> CollectorConfig:
         stats_refresh_sec=parse_duration(cp.get("stats", "refresh_interval", fallback="60")),
         maintenance_hour=maintenance_hour,
         reticulum_config_dir=cp.get("reticulum", "config_dir", fallback=None),
+        propagation=propagation_config.from_parser(cp),
     )

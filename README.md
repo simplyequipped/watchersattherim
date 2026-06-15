@@ -28,7 +28,7 @@ Observations are batched on an interval and sent to the collector in an LXMF mes
 - Linux OS (Ubuntu, Fedora, Raspberry Pi OS)
 - Python 3.10+
 - `ft8mon` (compiled)
-- HF audio source: a receiver feeding a sound card, or a `ft8mon` supported SDR
+- HF audio source: audio device (transceiver) or a `ft8mon` supported SDR
 - A configured Reticulum (RNS) network with a path to the collector
 
 ### Installation
@@ -206,29 +206,80 @@ They then send the collector a plain text message with one of:
 Observations can be queried over LXMF with the `watr-query` command, or over HTTP when the API is enabled:
 
 ```
-watr-query <collector-address> path_query tx_grid=FN42 rx_grid=FN19 hours=4
+watr-query <collector-address> path origin=FN42 dest=FN19 window=2h
 
-curl "http://localhost:8080/api/v1/path?tx_grid=FN42&rx_grid=FN19&hours=4"
+curl "http://localhost:8080/api/v1/path?origin=FN42&dest=FN19&window=2h"
 ```
+
+These are the raw observation queries (recent spots plus a summary):
 
 | Query | Parameters | HTTP endpoint |
 | :--- | :--- | :--- |
-| `path_query` | `tx_grid`, `rx_grid`, `hours` (default 4), `band` (optional) | `GET /api/v1/path` |
-| `from_grid` | `grid`, `hours` (default 4) | `GET /api/v1/from` |
-| `to_grid` | `grid`, `hours` (default 4) | `GET /api/v1/to` |
-| `band_activity` | `band`, `hours` (default 1) | `GET /api/v1/band` |
-| `monitor_list` | - | `GET /api/v1/monitors` |
-| `monitor_info` | `address` (hex) | `GET /api/v1/monitors/<address>` |
+| `path` | `origin`, `dest`, `window` (default 2h), `band` (optional) | `GET /api/v1/path` |
+| `from` | `grid` or `lat,lon`, `window` (default 2h) | `GET /api/v1/from` |
+| `to` | `grid` or `lat,lon`, `window` (default 2h) | `GET /api/v1/to` |
+| `band` | `band`, `window` (default 1h) | `GET /api/v1/band` |
+| `monitors` | - | `GET /api/v1/monitors` |
+| `monitor` | `address` (hex) | `GET /api/v1/monitors/<address>` |
 | `stats` | - | `GET /api/v1/stats` |
 
-Grids match by prefix, so a 4-character grid (`FN42`) also matches its 6-character subsquares (`FN42xx`). Each query returns matching observations plus a summary (count, SNR min/median/max, contributing monitors, direct/indirect split).
+`origin`/`dest` accept a Maidenhead grid or a `lat,lon` pair; `window` is a duration string
+(`30m`, `2h`, `7d`). Grids match by prefix, so a 4-character grid (`FN42`) also matches its
+6-character subsquares (`FN42xx`). Each query returns matching observations plus a summary
+(count, SNR min/median/max, contributing monitors, direct/indirect split).
+
+On top of these, the **propagation queries** turn observations into intelligence -
+`channel` (best band to a target now), `trend/*` (patterns over time + anomaly detection),
+`map` (activity over an area), and `coverage` (reachability over an area). They share this
+same `watr-query`/HTTP/LXMF surface and envelope; see
+[docs/PROPAGATION.md](docs/PROPAGATION.md) for the full specification.
+
+### Interpreting Query Results
+
+The network only ever sees what has been **decoded**, so every result is authoritative about
+*what was decodable* - not about absolute channel availability or what your particular
+station can work. Read the metrics with that scope in mind:
+
+- **Authoritative (direct measurements):** `distance` and `bearing` (geometry),
+  `median_snr_db` / `quality` (decode strength; `quality` is just SNR rescaled to 0-1), and
+  `confidence` (how much fresh data backs the number - a *trust* signal, not a
+  channel-goodness signal).
+- **Activity-related (the crowd + coverage, not pure channel):** `observations`, `grids`,
+  and `openness` (a decode-rate; reliable where activity is dense, but a quiet path with no
+  decodes is not the same as a closed band). Use these for "how busy/widespread," not "how
+  good."
+- **Most robust:** `deviation` (anomaly) - a *relative* metric, so the shared activity and
+  coverage biases cancel out. It is the honest answer to "is something unusual right now."
+
+Two reading tips: on a **fixed path** (`channel`, `trend/path`), watch SNR/`quality` -
+conditions move it. Across a **whole band** (`trend/band`), watch `distance` - the network
+self-selects decodable signals, so SNR clusters and *reach* carries the diurnal swing.
+
+Caveats that apply throughout: the data is receive-only, so `channel`/`coverage` infer your
+outbound link from observed inbound paths (**reciprocity**); SNR includes the other station's
+power and antenna (**ERP**), which a median smooths but does not remove; and a spatial result
+with no data for an area means a **blind spot**, not a closed band. Converting any of this to
+"can *my* station reach X" is a link-budget step that needs your power/antenna and is an
+estimate, not an authoritative output.
+
+What it is authoritative per endpoint:
+
+| Endpoint | Authoritative | Not |
+| :--- | :--- | :--- |
+| `path`/`from`/`to`/`band` | the actual records decoded, and stats over them | anything beyond what was decoded |
+| `channel` | a robust, network-derived SNR for a path now | whether *you* can work it; absolute reach |
+| `channel/anomaly` | whether now differs from the recent normal for this hour | the cause of the difference |
+| `trend/path/*` | a path's strength/decode-rate shape over time | absolute availability on quiet paths |
+| `trend/band/*` | a band's activity, spread, and reach over time | channel quality from `observations` alone |
+| `map` | strength/activity per area, as heard by the monitor(s) | areas with no data (blind, not closed) |
+| `coverage` | areas with decodable paths to/from a point, and their strength | absence as "no reach" (it is no evidence) |
 
 Every `watr-query` reply has the same outer shape: a protocol version `v`, the
 `request_id` echoed back, an `ok` flag, and a `result` payload. The HTTP API returns
 the same `result` but omits `v` and `request_id`. The shape of `result` depends on the
 query.
 
-`path_query`, `from_grid`, `to_grid`, and `band_activity` all return observations plus a summary:
+`path`, `from`, `to`, and `band` all return observations plus a summary:
 
 ```json
 {
@@ -259,7 +310,7 @@ query.
 }
 ```
 
-`monitor_list`:
+`monitors`:
 
 ```json
 {
@@ -281,7 +332,7 @@ query.
 }
 ```
 
-`monitor_info`:
+`monitor`:
 
 ```json
 {
