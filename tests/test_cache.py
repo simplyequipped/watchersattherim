@@ -1,8 +1,8 @@
 """Tests for the callsign->grid cache and the per-decode pipeline."""
 
 from watchersattherim.monitor.cache import CallsignCache
-from watchersattherim.monitor.parser import classify, parse_line
-from watchersattherim.monitor.pipeline import process_decode
+from watchersattherim.monitor.ft8_parser import classify, parse_line
+from watchersattherim.monitor.ft8_pipeline import process_decode
 
 
 def test_update_and_lookup():

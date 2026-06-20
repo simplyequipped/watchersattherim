@@ -7,12 +7,13 @@ from watchersattherim.monitor.telemetry import (
 from watchersattherim.monitor.transport import PendingQueue, flush_window
 
 
-def _obs(kind="direct", snr=-7):
+def _obs(kind="direct", snr=-7, power_dbm=None):
     return Observation(
         kind=kind,
         tx_grid="EN71", tx_lat=41.5, tx_lon=-88.0,
         rx_grid="FN19", rx_lat=49.5, rx_lon=-77.0,
         snr_db=snr, tx_call="KF9UG", rx_call="W1MON",
+        power_dbm=power_dbm,
     )
 
 
@@ -34,6 +35,7 @@ def test_batcher_row_shape_and_counts():
     assert r["band"] == "20m" and r["mode"] == "FT8" and r["type"] == "direct"
     assert r["tx_grid"] == "EN71" and r["snr"] == -7
     assert "tx_call" not in r           # callsigns off by default
+    assert "power_dbm" not in r         # FT8 carries no power
     assert b.decodes_seen == 2
 
 
@@ -42,6 +44,13 @@ def test_callsigns_included_when_enabled():
     b.add(_obs(), ts=1, freq_hz=14074000, band="20m")
     r = b.take()[0]
     assert r["tx_call"] == "KF9UG" and r["rx_call"] == "W1MON"
+
+
+def test_power_dbm_included_for_wspr():
+    b = TelemetryBatcher()
+    b.add(_obs(power_dbm=30), ts=1, freq_hz=14097100, band="20m", mode="WSPR")
+    r = b.take()[0]
+    assert r["mode"] == "WSPR" and r["power_dbm"] == 30
 
 
 def test_build_batch_matches_spec_shape():

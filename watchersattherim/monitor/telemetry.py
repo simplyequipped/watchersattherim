@@ -57,6 +57,8 @@ class TelemetryBatcher:
         if self.include_callsigns:
             row["tx_call"] = obs.tx_call
             row["rx_call"] = obs.rx_call
+        if obs.power_dbm is not None:
+            row["power_dbm"] = obs.power_dbm
         return row
 
     def add(self, obs: Observation, *, ts: int, freq_hz: int,

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from watchersattherim.monitor.observations import extract, grid_to_latlon
-from watchersattherim.monitor.parser import Kind, classify, parse_line
+from watchersattherim.monitor.observations import grid_to_latlon
+from watchersattherim.monitor.ft8_parser import Kind, classify, extract, parse_line
 
 SAMPLE = Path(__file__).resolve().parent.parent / "docs/samples/ft8mon_output.txt"
 
@@ -131,6 +131,7 @@ def test_direct_from_cq_grid():
     assert o.kind == "direct"
     assert o.tx_call == "KF9UG" and o.tx_grid == "EN71"
     assert o.rx_grid == "FN19" and o.snr_db == -3
+    assert o.power_dbm is None      # FT8 carries no power; the field stays None
 
 
 def test_indirect_needs_both_in_cache():

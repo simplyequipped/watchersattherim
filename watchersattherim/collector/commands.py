@@ -122,6 +122,30 @@ def _units(params: dict) -> str:
     return u
 
 
+def _ref_power(params: dict) -> int:
+    raw = params.get("ref_power_dbm")
+    if raw in (None, ""):
+        return 37
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise CommandError(INVALID_PARAMS, f"invalid ref_power_dbm: {raw}")
+
+
+def _rank(params: dict) -> str:
+    v = str(params.get("rank", "ft8")).lower()
+    if v not in ("ft8", "wspr"):
+        raise CommandError(INVALID_PARAMS, f"rank must be ft8 or wspr, got {v}")
+    return v
+
+
+def _mode(params: dict) -> str:
+    v = str(params.get("mode", "FT8")).upper()
+    if v not in ("FT8", "WSPR"):
+        raise CommandError(INVALID_PARAMS, f"mode must be FT8 or WSPR, got {v}")
+    return v
+
+
 def _at(params: dict):
     raw = params.get("at")
     if raw in (None, ""):
@@ -194,6 +218,7 @@ def _propagation(conn, command, params, *, now, prop) -> dict:
             conn, origin=_named_point(params, "origin"), dest=_named_point(params, "dest"),
             bands=_bands(params), window_sec=_window(params, 1800, prop.max_window_sec),
             at=at, widen=widen, units=_units(params),
+            ref_power_dbm=_ref_power(params), rank=_rank(params),
         )
     if command == "channel/anomaly":
         return channel.anomaly(
@@ -237,7 +262,7 @@ def _propagation(conn, command, params, *, now, prop) -> dict:
         radius_km, units = _radius(params, 2000, prop.max_radius_km)
         return field.map_field(
             conn, origin=_named_point(params, "origin"), radius_km=radius_km, units=units,
-            band=params.get("band", "40m"), resolution=_resolution(params),
+            band=params.get("band", "40m"), mode=_mode(params), resolution=_resolution(params),
             window_sec=_window(params, 3600, prop.max_window_sec), at=at,
             max_cells=prop.max_cells,
         )
@@ -252,5 +277,6 @@ def _propagation(conn, command, params, *, now, prop) -> dict:
             band=params.get("band"), resolution=_resolution(params),
             window_sec=_window(params, 1800, prop.max_window_sec), at=at,
             max_cells=prop.max_cells,
+            ref_power_dbm=_ref_power(params), rank=_rank(params),
         )
     raise CommandError(INVALID_COMMAND, f"unknown command: {command}")

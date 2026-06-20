@@ -48,6 +48,27 @@ def test_insert_and_count():
     assert n == 2 and storage.count_observations(conn) == 2
 
 
+def test_insert_stores_power_dbm():
+    conn = db()
+    storage.upsert_monitor(conn, MON_A, now=NOW)
+    row = obs(tx_grid="FN20")
+    row["mode"], row["power_dbm"] = "WSPR", 30
+    storage.insert_observations(conn, MON_A, [row])
+    stored = conn.execute(
+        "SELECT mode, power_dbm FROM observations WHERE tx_grid = 'FN20'"
+    ).fetchone()
+    assert stored["mode"] == "WSPR" and stored["power_dbm"] == 30
+
+
+def test_ft8_row_stores_null_power():
+    # an FT8 telemetry row has no power_dbm key; it must insert as NULL
+    conn = db()
+    storage.upsert_monitor(conn, MON_A, now=NOW)
+    storage.insert_observations(conn, MON_A, [obs()])
+    stored = conn.execute("SELECT power_dbm FROM observations").fetchone()
+    assert stored["power_dbm"] is None
+
+
 def test_dedup_identical_rows():
     conn = db()
     storage.upsert_monitor(conn, MON_A, now=NOW)
@@ -114,6 +135,19 @@ def test_ingest_open_mode_accepts():
     assert conn.execute(
         "SELECT 1 FROM monitors WHERE address=?", (MON_A,)
     ).fetchone() is not None
+
+
+def test_ingest_carries_power_dbm_end_to_end():
+    conn = db()
+    cfg = CollectorConfig(allowlist_mode="open")
+    row = obs(tx_grid="FN20")
+    row["mode"], row["power_dbm"] = "WSPR", 37
+    r = ingest_batch(conn, MON_A, batch([row]), config=cfg, now=NOW)
+    assert r.accepted == 1
+    stored = conn.execute(
+        "SELECT power_dbm FROM observations WHERE tx_grid = 'FN20'"
+    ).fetchone()
+    assert stored["power_dbm"] == 37
 
 
 def test_ingest_allowlisted_registers_monitor():
@@ -376,8 +410,44 @@ def test_maintenance_hour_out_of_range(tmp_path):
         load(str(p))
 
 
-def test_full_collector_example_exercises_options():
-    c = load(str(REPO / "examples/collector.full.example.ini"))
+# Every option set, so the loader is exercised end to end. (The shipped example is
+# a usable bare-defaults template - tested separately below.)
+_EVERY_OPTION = """
+[collector]
+http_api = true
+bind = 127.0.0.1
+http_port = 9000
+[storage]
+dir = ~/.watchersattherim/collector
+retention_days = 30
+[allowlist]
+mode = explicit
+allowed =
+    aabbccddeeff00112233445566778899
+    99887766554433221100ffeeddccbbaa
+[admin]
+allowed =
+    00112233445566778899aabbccddeeff
+[ingest]
+reject_older_than = 12h
+reject_future_skew = 2m
+[stats]
+refresh_interval = 2m
+[maintenance]
+hour = 4
+[propagation]
+enabled = true
+default_timezone = UTC
+max_radius_km = 5000
+max_cells = 2000
+max_window = 90d
+"""
+
+
+def test_every_collector_option_parses(tmp_path):
+    p = tmp_path / "c.ini"
+    p.write_text(_EVERY_OPTION)
+    c = load(str(p))
     assert c.http_api is True and c.bind == "127.0.0.1" and c.http_port == 9000
     assert c.retention_days == 30
     assert c.allowed == ("aabbccddeeff00112233445566778899",
@@ -389,3 +459,11 @@ def test_full_collector_example_exercises_options():
     assert c.maintenance_hour == 4
     assert c.propagation.enabled is True and c.propagation.default_timezone == "UTC"
     assert c.propagation.max_radius_km == 5000 and c.propagation.max_window_sec == 90 * 86400
+
+
+def test_shipped_collector_example_is_usable():
+    # the example must run as-is and bake in no monitors/admins
+    c = load(str(REPO / "examples/collector.full.example.ini"))
+    assert c.allowlist_mode == "explicit"
+    assert c.allowed == () and c.admin_allowed == ()
+    assert c.http_api is False and c.retention_days == 90 and c.maintenance_hour == 3

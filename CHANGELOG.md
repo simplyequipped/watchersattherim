@@ -1,5 +1,22 @@
 ## Changelog
 
+### Version 0.3.0
+
+- added WSPR support via `wsprmon`
+- added per-receiver `mode` (ft8 | wspr), `band`, and `enabled` keys to monitor config
+- added `[wsprmon]` section to monitor config file (`path`, `wsprd_path`)
+- added `power_dbm` to telemetry handling collector observations table schema
+- added WSPR `ref_snr_db` (SNR normalized to a reference power) to `channel`/`coverage`
+- added `ref_power_dbm` and `rank` parameters to `channel`/`coverage`
+- added `mode` parameter to `map` query
+- added per-mode SNR normalization floor
+- added `install.sh` installer with `--config` and `--service` options
+- added systemd service files for monitor and collector
+- changed monitor receiver sections: `NAME` is a unique id (`band` defaults to `NAME`)
+- changed `channel`/`coverage` result structure to add `ft8`/`wspr` objects
+- updated example config files
+- updated README.md and `docs/PROPAGATION.md` for WSPR
+
 ### Version 0.2.0
 
 - added propagation submodule

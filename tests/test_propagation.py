@@ -22,13 +22,17 @@ def make_conn(tmp_path, name="c.db"):
     return conn
 
 
-def add(conn, *, tx_grid, rx_grid, snr, ts, band="40m", type="direct"):
-    storage.insert_observations(conn, MON, [{
-        "ts": ts, "mode": "FT8", "band": band, "freq": next(_freq),
+def add(conn, *, tx_grid, rx_grid, snr, ts, band="40m", type="direct",
+        mode="FT8", power=None):
+    row = {
+        "ts": ts, "mode": mode, "band": band, "freq": next(_freq),
         "tx_lat": 0.0, "tx_lon": 0.0, "tx_grid": tx_grid,
         "rx_lat": 0.0, "rx_lon": 0.0, "rx_grid": rx_grid,
         "snr": snr, "type": type,
-    }])
+    }
+    if power is not None:
+        row["power_dbm"] = power
+    storage.insert_observations(conn, MON, [row])
 
 
 # --- geo --------------------------------------------------------------------
@@ -50,13 +54,14 @@ def test_channel_forward_match(tmp_path):
     for i in range(4):
         add(conn, tx_grid="FN19", rx_grid="EM12", snr=-5 - i, ts=AT - 60 - i)
     r = channel.estimate(conn, origin="FN19", dest="EM12", at=AT)
-    assert r["ranked"] == ["40m"]
+    assert r["ranked"] == ["40m"] and r["rank"] == "ft8"
     assert r["origin"]["grid"] == "FN19" and r["dest"]["grid"] == "EM12"
-    b = r["bands"][0]
-    assert b["evidence"]["observations"] == 4
-    assert b["evidence"]["reciprocal"] == 0
-    assert b["evidence"]["match_precision"] == 4
-    assert "median_snr_db" in b and 0.0 <= b["quality"] <= 1.0
+    ft8 = r["bands"]["40m"]["ft8"]
+    assert ft8["observations"] == 4
+    assert ft8["reciprocal"] == 0
+    assert ft8["match_precision"] == 4
+    assert "median_snr_db" in ft8 and 0.0 <= ft8["quality"] <= 1.0
+    assert r["bands"]["40m"]["wspr"] is None       # no WSPR data for this path
 
 
 def test_channel_distance_and_units(tmp_path):
@@ -74,8 +79,8 @@ def test_channel_reciprocal_counted(tmp_path):
     conn = make_conn(tmp_path)
     for i in range(4):
         add(conn, tx_grid="EM12", rx_grid="FN19", snr=-3, ts=AT - 30 - i)
-    b = channel.estimate(conn, origin="FN19", dest="EM12", at=AT)["bands"][0]
-    assert b["evidence"]["reciprocal"] == 4
+    ft8 = channel.estimate(conn, origin="FN19", dest="EM12", at=AT)["bands"]["40m"]["ft8"]
+    assert ft8["reciprocal"] == 4
 
 
 def test_channel_window_excludes_old(tmp_path):
@@ -83,7 +88,7 @@ def test_channel_window_excludes_old(tmp_path):
     add(conn, tx_grid="FN19", rx_grid="EM12", snr=-5, ts=AT - 60)
     add(conn, tx_grid="FN19", rx_grid="EM12", snr=-5, ts=AT - 10_000)
     r = channel.estimate(conn, origin="FN19", dest="EM12", window_sec=1800, at=AT)
-    assert r["bands"][0]["evidence"]["observations"] == 1
+    assert r["bands"]["40m"]["ft8"]["observations"] == 1
 
 
 def test_channel_no_widen(tmp_path):
@@ -92,6 +97,52 @@ def test_channel_no_widen(tmp_path):
         add(conn, tx_grid="FN19", rx_grid="EM12", snr=-5, ts=AT - 60 - i)
     assert channel.estimate(conn, origin="FN19XX", dest="EM12AA", at=AT)["ranked"] == ["40m"]
     assert channel.estimate(conn, origin="FN19XX", dest="EM12AA", at=AT, widen=False)["ranked"] == []
+
+
+def test_channel_wspr_ref_snr_and_fallback(tmp_path):
+    conn = make_conn(tmp_path)
+    # WSPR beacons at +30 dBm heard at -16; default ref 37 -> ref_snr = -16 + (37-30) = -9
+    for i in range(4):
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-16, ts=AT - 60 - i,
+            mode="WSPR", power=30)
+    r = channel.estimate(conn, origin="FN19", dest="EM12", at=AT)
+    block = r["bands"]["40m"]
+    assert block["ft8"] is None                       # no FT8 data for this path
+    assert block["wspr"]["median_power_dbm"] == 30 and block["wspr"]["median_snr_db"] == -16
+    assert block["wspr"]["ref_snr_db"] == -9
+    assert r["ref_power_dbm"] == 37
+    assert r["rank"] == "wspr" and r["ranked"] == ["40m"]   # requested ft8, fell back
+
+
+def test_channel_ref_power_arg_shifts_ref_snr(tmp_path):
+    conn = make_conn(tmp_path)
+    for i in range(4):
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-16, ts=AT - 60 - i,
+            mode="WSPR", power=30)
+    r = channel.estimate(conn, origin="FN19", dest="EM12", at=AT, ref_power_dbm=43)
+    assert r["ref_power_dbm"] == 43
+    assert r["bands"]["40m"]["wspr"]["ref_snr_db"] == -3   # -16 + (43-30)
+
+
+def test_channel_both_modes_symmetric(tmp_path):
+    conn = make_conn(tmp_path)
+    for i in range(4):
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-5, ts=AT - 60 - i)            # FT8
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-16, ts=AT - 60 - i,
+            mode="WSPR", power=30)                                                    # WSPR
+    block = channel.estimate(conn, origin="FN19", dest="EM12", at=AT)["bands"]["40m"]
+    assert "quality" in block["ft8"] and "ref_snr_db" in block["wspr"]
+
+
+def test_channel_rank_wspr_orders_by_ref_snr(tmp_path):
+    conn = make_conn(tmp_path)
+    for i in range(4):
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-10, ts=AT - 60 - i, band="40m",
+            mode="WSPR", power=30)    # ref_snr -3
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-20, ts=AT - 60 - i, band="20m",
+            mode="WSPR", power=30)    # ref_snr -13
+    r = channel.estimate(conn, origin="FN19", dest="EM12", at=AT, rank="wspr")
+    assert r["rank"] == "wspr" and r["ranked"] == ["40m", "20m"]
 
 
 def test_channel_anomaly_depressed(tmp_path):
@@ -165,8 +216,22 @@ def test_coverage_best_band(tmp_path):
         add(conn, tx_grid="EM12", rx_grid="FN19", snr=-18, ts=AT - 30 - i, band="40m")
     r = field.coverage(conn, origin="FN19", radius_km=4000, resolution="medium", at=AT)
     cell = next(c for c in r["cells"] if c["grid"] == "EM12")
-    assert cell["band"] == "20m"            # stronger band wins as best
-    assert "confidence" in cell and cell["observations"] == 4
+    assert cell["ft8"]["band"] == "20m"            # stronger band wins as best
+    assert "confidence" in cell["ft8"] and cell["ft8"]["observations"] == 4
+    assert cell["wspr"] is None                    # no WSPR data
+
+
+def test_coverage_wspr_per_mode(tmp_path):
+    conn = make_conn(tmp_path)
+    for i in range(4):
+        add(conn, tx_grid="EM12", rx_grid="FN19", snr=-5, ts=AT - 30 - i, band="20m")   # FT8
+        add(conn, tx_grid="EM12", rx_grid="FN19", snr=-16, ts=AT - 30 - i, band="40m",
+            mode="WSPR", power=30)                                                       # WSPR
+    r = field.coverage(conn, origin="FN19", radius_km=4000, resolution="medium", at=AT)
+    cell = next(c for c in r["cells"] if c["grid"] == "EM12")
+    assert cell["ft8"]["band"] == "20m" and "quality" in cell["ft8"]
+    assert cell["wspr"]["band"] == "40m" and cell["wspr"]["ref_snr_db"] == -9
+    assert r["ref_power_dbm"] == 37
 
 
 # --- dispatch: resource caps -----------------------------------------------
@@ -225,6 +290,29 @@ def test_coverage_requires_exactly_one_endpoint(tmp_path):
     assert e2.value.code == INVALID_PARAMS
 
 
+def test_dispatch_channel_ref_power_and_rank(tmp_path):
+    conn = make_conn(tmp_path)
+    for i in range(4):
+        add(conn, tx_grid="FN19", rx_grid="EM12", snr=-16, ts=AT - 60 - i,
+            mode="WSPR", power=30)
+    r = _dispatch(conn, "channel", {"origin": "FN19", "dest": "EM12",
+                                    "ref_power_dbm": "43", "rank": "wspr"})
+    assert r["ref_power_dbm"] == 43 and r["rank"] == "wspr"
+    assert r["bands"]["40m"]["wspr"]["ref_snr_db"] == -3
+
+
+@pytest.mark.parametrize("cmd,params", [
+    ("channel", {"origin": "FN19", "dest": "EM12", "rank": "jt65"}),
+    ("channel", {"origin": "FN19", "dest": "EM12", "ref_power_dbm": "loud"}),
+    ("map", {"origin": "FN19", "mode": "jt65"}),
+])
+def test_dispatch_invalid_propagation_args(tmp_path, cmd, params):
+    conn = make_conn(tmp_path)
+    with pytest.raises(CommandError) as e:
+        _dispatch(conn, cmd, params)
+    assert e.value.code == INVALID_PARAMS
+
+
 # --- coverage / map variants ------------------------------------------------
 
 def test_coverage_dest_mode(tmp_path):
@@ -243,7 +331,7 @@ def test_coverage_single_band_forced(tmp_path):
         add(conn, tx_grid="EM12", rx_grid="FN19", snr=-18, ts=AT - 30 - i, band="40m")
     r = field.coverage(conn, origin="FN19", band="40m", radius_km=4000, resolution="medium", at=AT)
     cell = next(c for c in r["cells"] if c["grid"] == "EM12")
-    assert cell["band"] == "40m"          # forced to the requested band, not best (20m)
+    assert cell["ft8"]["band"] == "40m"          # forced to the requested band, not best (20m)
 
 
 def test_map_radius_excludes_far(tmp_path):

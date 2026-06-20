@@ -46,11 +46,12 @@ def _dates_in_period(dates: set, bucket: int, unit: str) -> int:
     return len({d for d in dates if d.year == bucket}) or 1
 
 
-def _path_rows(conn, origin: str, dest: str, since: int):
+def _path_rows(conn, origin: str, dest: str, since: int, mode: str = "FT8"):
     return conn.execute(
-        "SELECT band, snr_db, observed_at FROM observations WHERE observed_at >= ? "
+        "SELECT band, snr_db, observed_at FROM observations "
+        "WHERE mode = ? AND observed_at >= ? "
         "AND ((tx_grid LIKE ? AND rx_grid LIKE ?) OR (tx_grid LIKE ? AND rx_grid LIKE ?))",
-        (since, origin + "%", dest + "%", dest + "%", origin + "%"),
+        (mode.upper(), since, origin + "%", dest + "%", dest + "%", origin + "%"),
     ).fetchall()
 
 
@@ -99,7 +100,7 @@ def _path_curve(items: list, unit: str) -> list[dict]:
         out.append({
             unit: b,
             "openness": round(min(1.0, decoded_slots / possible), 2),
-            "quality": metrics.quality(median_snr),
+            "quality": metrics.quality(median_snr, "FT8"),
             "median_snr_db": median_snr,
             "confidence": metrics.historical_confidence(len(bitems)),
             "observations": len(bitems),
@@ -182,7 +183,7 @@ def band(conn, *, band: str, unit: str, origin: Optional[str] = None,
     since = now - max_window_sec
     rows = conn.execute(
         "SELECT snr_db, observed_at, tx_grid, rx_grid FROM observations "
-        "WHERE band = ? AND observed_at >= ?",
+        "WHERE band = ? AND mode = 'FT8' AND observed_at >= ?",
         (band, since),
     ).fetchall()
 
@@ -222,7 +223,7 @@ def band(conn, *, band: str, unit: str, origin: Optional[str] = None,
             "observations": len(bitems),
             "grids": len({g for _, g, _ in bitems}),
             "distance": geo.convert_km(statistics.median([d for _, _, d in bitems]), units),
-            "quality": metrics.quality(median_snr),
+            "quality": metrics.quality(median_snr, "FT8"),
             "median_snr_db": median_snr,
             "confidence": metrics.historical_confidence(len(bitems)),
         })

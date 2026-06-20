@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS observations (
     observation_type  TEXT NOT NULL,
     tx_call           TEXT,
     rx_call           TEXT,
+    power_dbm         INTEGER,
     FOREIGN KEY (monitor) REFERENCES monitors(address)
 );
 
@@ -62,7 +63,7 @@ CREATE TABLE IF NOT EXISTS query_blocks (
 _OBS_COLUMNS = (
     "monitor", "observed_at", "mode", "band", "freq_hz",
     "tx_lat", "tx_lon", "tx_grid", "rx_lat", "rx_lon", "rx_grid",
-    "snr_db", "observation_type", "tx_call", "rx_call",
+    "snr_db", "observation_type", "tx_call", "rx_call", "power_dbm",
 )
 
 
@@ -162,6 +163,7 @@ def insert_observations(conn, monitor: bytes, rows: Iterable[dict]) -> int:
             r["tx_lat"], r["tx_lon"], r["tx_grid"],
             r["rx_lat"], r["rx_lon"], r["rx_grid"],
             r["snr"], r["type"], r.get("tx_call"), r.get("rx_call"),
+            r.get("power_dbm"),
         )
         cur.execute(
             f"INSERT OR IGNORE INTO observations ({', '.join(_OBS_COLUMNS)}) "

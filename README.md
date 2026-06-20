@@ -2,7 +2,7 @@
 
 ## Watchers At The Rim
 
-A receive-only FT8 propagation monitor for Reticulum/LXMF networks. Monitoring nodes passively decode FT8, extract per-path propagation observations, and report them to a collector over LXMF.
+A receive-only FT8 and WSPR propagation monitor for Reticulum/LXMF networks. Monitoring nodes passively decode FT8 and WSPR, extract per-path propagation observations, and report them to a collector over LXMF.
 
 ### Status
 
@@ -10,10 +10,10 @@ This project is beta status. More real world testing required.
 
 ### How it works
 
-A monitor runs one [ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) process per band specified in the config file, reads its decodes, and turns them into propagation observations based on grid square locations and SNR signal reports:
+A monitor runs one decoder process per configured receiver - [ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) for FT8 or [wsprmon](https://github.com/simplyequipped/wsprmon) (a streaming wrapper around WSJT-X's `wsprd`) for WSPR - reads its decodes, and turns them into propagation observations based on grid square locations and SNR signal reports. WSPR observations also carry the transmitter's reported power:
 
 ```
-ft8mon > parse decodes > callsign/grid cache > observations > batch > LXMF > collector
+ft8mon / wsprmon > parse decodes > observations > batch > LXMF > collector
 ```
 
 Each observation is a single `(tx_location, rx_location, snr, freq, time)` dataset. Two kinds of observations are produced:
@@ -27,21 +27,45 @@ Observations are batched on an interval and sent to the collector in an LXMF mes
 
 - Linux OS (Ubuntu, Fedora, Raspberry Pi OS)
 - Python 3.10+
-- `ft8mon` (compiled)
-- HF audio source: audio device (transceiver) or a `ft8mon` supported SDR
+- `ft8mon`/`wsprmon`/`wsprd` (compiled)
+- HF audio source: audio device (transceiver) or a `ft8mon`/`wsprmon` supported SDR
 - A configured Reticulum (RNS) network with a path to the collector
 
 ### Installation
 
+The install script installs system dependencies, clones and builds the
+decoders (ft8mon, wsprd, wsprmon), and installs `watchersattherim` into a virtualenv:
+
+```bash
+git clone https://github.com/simplyequipped/watchersattherim.git
+cd watchersattherim  
+  
+# install monitor only
+./install.sh monitor
+# install monitor with a full example config file
+./install.sh monitor --config
+# install monitor with a full example config file and a system service
+./install.sh monitor --service  
+  
+# install collector only
+./install.sh collector
+# install collector with a full example config file
+./install.sh collector --config
+# install collector with a full example config file and a system service
+./install.sh collector --service
+```
+
+#### Manual installation
+
 1. Install ft8mon build dependencies (fftw, libsndfile, portaudio)
 
-    On Debian, Ubuntu, and Raspberry Pi OS:
+    Debian, Ubuntu, and Raspberry Pi OS:
     ```
     sudo apt update
     sudo apt install -y build-essential git libfftw3-dev libsndfile1-dev portaudio19-dev
     ```
 
-    On Fedora:
+    Fedora:
     ```
     sudo dnf install -y gcc-c++ make git fftw-devel libsndfile-devel portaudio-devel
     ```
@@ -51,16 +75,34 @@ Observations are batched on an interval and sent to the collector in an LXMF mes
 2. Build ft8mon
 
     ```
-    git clone https://github.com/rtmrtmrtmrtm/ft8mon.git
+    git clone https://github.com/simplyequipped/ft8mon.git
     cd ft8mon
     make
     ```
 
-    Clone the `https://github.com/mbroihier/ft8mon` fork instead for RTL-SDR v3 support.
-
     List sound-card device numbers with `./ft8mon -list`. Note the path to the compiled `ft8mon` binary, or add it to PATH.
 
-3. Install WatchersAtTheRim monitor
+3. Build wsprd
+
+    ```
+    git clone https://github.com/simplyequipped/wsprd.git
+    cd wsprd
+    make
+    ```
+
+    Note the path to the compiled `wsprd` binary, or add it to PATH.
+
+4. Build wsprmon
+
+    ```
+    git clone https://github.com/simplyequipped/wsprmon.git
+    cd wsprmon
+    make
+    ```
+
+    Note the path to the compiled `wsprmon` binary, or add it to PATH.
+
+5. Install WatchersAtTheRim monitor
 
     ```
     git clone https://github.com/simplyequipped/watchersattherim.git
@@ -68,9 +110,7 @@ Observations are batched on an interval and sent to the collector in an LXMF mes
     pip install .
     ```
 
-    This installs the `watr` command and dependencies.
-
-4. Configure Reticulum
+6. Configure Reticulum
 
     LXMF delivery requires a working Reticulum network. If you have not used Reticulum before, create a config and add at least one interface that can reach the collector. See the [Reticulum manual](https://markqvist.github.io/Reticulum/manual/). By default the monitor uses the standard `~/.reticulum` configuration.
 
@@ -91,13 +131,17 @@ card = 8
 address = <collector-lxmf-address-hex>
 ```
 
-**NOTE:** if `ft8mon` is not on your `PATH`, set its location:
+**NOTE:** if `ft8mon` / `wsprmon` are not on `PATH`, set their locations:
 ```ini
 [ft8mon]
 path = /home/pi/ft8mon/ft8mon
+
+[wsprmon]
+path = /home/pi/wsprmon/wsprmon
+wsprd_path = /home/pi/wsprd/wsprd   # optional; wsprmon finds wsprd on PATH if unset
 ```
 
-**Receivers.** Each `[receiver:NAME]` section is one ft8mon process, where `NAME` is the frequency band (ex. `20m`). Give **one** of `card`, `path`, or `input`. `freq` is the RF dial frequency in Hz: an SDR is tuned to it, and for an audio device (radio tuned externally) it is recorded as metadata.
+**Receivers.** Each `[receiver:NAME]` section is one decoder process. `NAME` is a unique id; `band` defaults to it (ex. `20m`). `mode` is `ft8` (default) or `wspr`, and `enabled = false` keeps a section configured but not running. Give **one** of `card`, `path`, or `input`. `freq` is the RF dial frequency in Hz: an SDR is tuned to it, and for an audio device (radio tuned externally) it is recorded as metadata.
 
 | Input | Config Keys | `ft8mon` Command |
 | :--- | :--- | :--- |
@@ -108,7 +152,7 @@ path = /home/pi/ft8mon/ft8mon
 | Apache / HPSDR | `input = hpsdr`, `ip` | `-card hpsdr <ip>,<mhz>` |
 | WAV file | `path = file.wav` | `-card file <path>` |
 
-An optional `args` value is appended to the `ft8mon` command.
+For `mode = wspr`, `wsprmon` uses the same input selector and takes the dial frequency via `-f`. An optional `args` value is appended to the decoder command.
 
 ### Usage
 
@@ -243,7 +287,9 @@ station can work. Read the metrics with that scope in mind:
 - **Authoritative (direct measurements):** `distance` and `bearing` (geometry),
   `median_snr_db` / `quality` (decode strength; `quality` is just SNR rescaled to 0-1), and
   `confidence` (how much fresh data backs the number - a *trust* signal, not a
-  channel-goodness signal).
+  channel-goodness signal). For WSPR, `ref_snr_db` is *more* authoritative still: because
+  WSPR carries the transmit power, it normalizes power out (`channel`/`coverage` report it
+  per mode, alongside FT8), giving a path metric the ERP confound below does not touch.
 - **Activity-related (the crowd + coverage, not pure channel):** `observations`, `grids`,
   and `openness` (a decode-rate; reliable where activity is dense, but a quiet path with no
   decodes is not the same as a closed band). Use these for "how busy/widespread," not "how
@@ -256,8 +302,9 @@ conditions move it. Across a **whole band** (`trend/band`), watch `distance` - t
 self-selects decodable signals, so SNR clusters and *reach* carries the diurnal swing.
 
 Caveats that apply throughout: the data is receive-only, so `channel`/`coverage` infer your
-outbound link from observed inbound paths (**reciprocity**); SNR includes the other station's
-power and antenna (**ERP**), which a median smooths but does not remove; and a spatial result
+outbound link from observed inbound paths (**reciprocity**); FT8 SNR includes the other station's
+power and antenna (**ERP**), which a median smooths but does not remove (WSPR's `ref_snr_db` does,
+by normalizing to a reference power); and a spatial result
 with no data for an area means a **blind spot**, not a closed band. Converting any of this to
 "can *my* station reach X" is a link-budget step that needs your power/antenna and is an
 estimate, not an authoritative output.
@@ -407,6 +454,7 @@ pytest
 ### Acknowledgements
 
 [ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) by Robert Morris, AB1HL<br>
+[wsprd](https://wsjt.sourceforge.io/) WSPR decoder from WSJT-X via [https://github.com/pavel-demin/wsprd](https://github.com/pavel-demin/wsprd)<br>
 [Reticulum](https://github.com/markqvist/Reticulum) and [LXMF](https://github.com/markqvist/LXMF) by Mark Qvist<br>
 FT8 protocol by Steven Franke, Bill Somerville, and Joe Taylor (WSJT-X)<br>
 

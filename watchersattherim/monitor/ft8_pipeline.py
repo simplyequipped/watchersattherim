@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Optional
 
 from .cache import CallsignCache
-from .observations import Observation, extract
-from .parser import Decode, Message, classify, parse_line
+from .observations import Observation
+from .ft8_parser import Decode, Message, classify, extract, parse_line
 
 
 def learn(msg: Message, cache: CallsignCache, ts: Optional[float] = None) -> None:
@@ -56,3 +56,25 @@ def handle_line(
         return []
     msg = classify(decode.message)
     return process_decode(decode, msg, monitor_grid, cache, monitor_call, ts)
+
+
+def ingest(
+    line: str,
+    dial_hz: int,
+    monitor_grid: str,
+    cache: CallsignCache,
+    monitor_call: Optional[str] = None,
+    ts: Optional[float] = None,
+) -> Optional[list[tuple[Observation, int]]]:
+    """Parse one ft8mon line into (observation, freq_hz) pairs for the monitor.
+
+    Returns None for a non-decode line; a list (possibly empty) for a decode.
+    FT8 frequency is the dial plus the decode's audio offset.
+    """
+    decode = parse_line(line)
+    if decode is None:
+        return None
+    freq_hz = dial_hz + int(round(decode.freq))
+    obs = process_decode(decode, classify(decode.message), monitor_grid, cache,
+                         monitor_call, ts)
+    return [(o, freq_hz) for o in obs]

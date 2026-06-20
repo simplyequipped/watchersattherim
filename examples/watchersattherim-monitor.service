@@ -1,0 +1,22 @@
+# watchersattherim monitor - systemd system service (starts at boot).
+#
+# Installed and enabled by:  ./install.sh monitor --service
+# Manually: replace the __PLACEHOLDERS__, copy to /etc/systemd/system/, then
+#   sudo systemctl enable --now watchersattherim-monitor
+#     __USER__    the user to run as
+#     __VENV__    the watr venv      (default: /home/__USER__/.watchersattherim/venv)
+#     __CONFIG__  the config file     (default: /home/__USER__/.watchersattherim/monitor.full.ini)
+
+[Unit]
+Description=watchersattherim FT8/WSPR propagation monitor
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+ExecStart=__VENV__/bin/watr-monitor -c __CONFIG__
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

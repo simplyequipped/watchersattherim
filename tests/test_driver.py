@@ -7,8 +7,8 @@ captured sample for an end-to-end read-loop test (no ft8mon binary needed).
 from pathlib import Path
 
 from watchersattherim.monitor.cache import CallsignCache
-from watchersattherim.monitor.driver import Ft8monDriver
-from watchersattherim.monitor.pipeline import handle_line
+from watchersattherim.monitor.driver import ReceiverDriver
+from watchersattherim.monitor.ft8_pipeline import handle_line
 
 SAMPLE = Path(__file__).resolve().parent.parent / "docs/samples/ft8mon_output.txt"
 
@@ -38,7 +38,7 @@ class FakePopen:
 
 def test_reads_all_lines_then_stops():
     seen = []
-    drv = Ft8monDriver(["fake"], on_line=seen.append, max_restarts=0,
+    drv = ReceiverDriver(["fake"], on_line=seen.append, max_restarts=0,
                        popen=lambda argv: FakePopen(["a", "b", "c"]))
     drv.run()
     assert seen == ["a", "b", "c"]
@@ -56,7 +56,7 @@ def test_restarts_on_exit():
 
     seen = []
     delays = []
-    drv = Ft8monDriver(
+    drv = ReceiverDriver(
         ["fake"], on_line=seen.append,
         max_restarts=2, restart_delay=5.0,
         popen=popen, sleep=delays.append,
@@ -77,14 +77,14 @@ def test_bad_line_does_not_kill_reader():
             raise ValueError("bad line")
         seen.append(line)
 
-    drv = Ft8monDriver(["fake"], on_line=on_line, max_restarts=0,
+    drv = ReceiverDriver(["fake"], on_line=on_line, max_restarts=0,
                        popen=lambda argv: FakePopen(["a", "boom", "b", "c"]))
     drv.run()
     assert seen == ["a", "b", "c"]
 
 
 def test_bounce_terminates_current_child_without_stopping():
-    drv = Ft8monDriver(["fake"], on_line=lambda _l: None)
+    drv = ReceiverDriver(["fake"], on_line=lambda _l: None)
     proc = FakePopen([])
     drv._proc = proc
     drv.bounce()
@@ -99,7 +99,7 @@ def test_stop_terminates_child():
         if line == "x":
             drv.stop()  # stop mid-stream
 
-    drv = Ft8monDriver(["fake"], on_line=on_line, popen=lambda argv: proc)
+    drv = ReceiverDriver(["fake"], on_line=on_line, popen=lambda argv: proc)
     drv.run()
     assert proc.terminated is True
 
@@ -113,7 +113,7 @@ def test_replay_sample_through_pipeline_via_cat():
     def on_line(line):
         observations.extend(handle_line(line, cache, monitor_grid="FN19"))
 
-    drv = Ft8monDriver(["cat", str(SAMPLE)], on_line=on_line, max_restarts=0)
+    drv = ReceiverDriver(["cat", str(SAMPLE)], on_line=on_line, max_restarts=0)
     drv.run()
 
     # A busy band capture should yield plenty of direct observations and learn

@@ -119,7 +119,14 @@ def _rows(result: dict) -> list[dict]:
         bands = result["bands"]
         if isinstance(bands, list):
             return bands
-        return [{"band": b, **it} for b, v in bands.items() for it in v.get("items", [])]
+        # trend: {band: {items: [...]}}; channel: {band: {ft8, wspr}}
+        rows = []
+        for b, v in bands.items():
+            if isinstance(v, dict) and "items" in v:
+                rows.extend({"band": b, **it} for it in v["items"])
+            else:
+                rows.append({"band": b, **v})
+        return rows
     if result.get("monitor"):
         return [result["monitor"]]
     return [result]

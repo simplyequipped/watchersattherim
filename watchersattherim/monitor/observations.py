@@ -73,9 +73,11 @@ class Observation:
     snr_db: int
     tx_call: Optional[str] = None
     rx_call: Optional[str] = None
+    power_dbm: Optional[int] = None   # WSPR transmit power; None for FT8
 
 
-def _obs(kind, tx_call, tx_grid, rx_call, rx_grid, snr) -> Observation:
+def make_observation(kind, tx_call, tx_grid, rx_call, rx_grid, snr,
+                     power_dbm=None) -> Observation:
     tlat, tlon = grid_to_latlon(tx_grid)
     rlat, rlon = grid_to_latlon(rx_grid)
     return Observation(
@@ -83,48 +85,5 @@ def _obs(kind, tx_call, tx_grid, rx_call, rx_grid, snr) -> Observation:
         tx_grid=tx_grid, tx_lat=tlat, tx_lon=tlon,
         rx_grid=rx_grid, rx_lat=rlat, rx_lon=rlon,
         snr_db=snr, tx_call=tx_call, rx_call=rx_call,
+        power_dbm=power_dbm,
     )
-
-
-def extract(
-    msg,                                  # watchers.parser.Message
-    decode_snr: int,
-    monitor_grid: str,
-    monitor_call: Optional[str] = None,
-    lookup: Optional[GridLookup] = None,
-) -> list[Observation]:
-    """Produce 0..2 observations from one classified decode.
-
-    ``lookup(callsign) -> grid | None`` backfills grids from the callsign cache;
-    pass ``None`` to use only grids present in the message.
-    """
-    from .parser import Kind
-
-    if lookup is None:
-        def lookup(_call: str) -> Optional[str]:  # noqa: ANN202
-            return None
-
-    out: list[Observation] = []
-
-    # The transmitter is call_de (CQ caller for a CQ). Direct path ends here.
-    tx_call = msg.call_de
-    if tx_call is not None and not msg.de_hashed:
-        tx_grid = msg.grid or lookup(tx_call)
-        if tx_grid is not None:
-            out.append(_obs("direct", tx_call, tx_grid,
-                            monitor_call, monitor_grid, decode_snr))
-
-    # Indirect: report given by call_de about call_to -> path call_to -> call_de.
-    if (
-        msg.kind in (Kind.STANDARD, Kind.NONSTD)
-        and msg.report_db is not None
-        and msg.call_to is not None and not msg.to_hashed
-        and msg.call_de is not None and not msg.de_hashed
-    ):
-        a_grid = lookup(msg.call_to)
-        b_grid = lookup(msg.call_de)
-        if a_grid is not None and b_grid is not None:
-            out.append(_obs("indirect", msg.call_to, a_grid,
-                            msg.call_de, b_grid, msg.report_db))
-
-    return out

@@ -107,24 +107,25 @@ observations. It is the load-bearing assumption of the system.
 
 ## Shared metrics
 
-- **`quality`** - median SNR mapped onto a fixed scale (-24 to +10 dB -> 0..1),
+- **`quality`** (FT8) - median SNR mapped onto a fixed scale (-24 to +10 dB -> 0..1),
   clamped. Absolute and comparable across bands, times, and maps.
-- **`median_snr_db`** - the raw median SNR in dB, reported alongside `quality`
-  everywhere `quality` appears.
+- **`median_snr_db`** - the raw median SNR in dB
+- **`ref_snr_db`** (WSPR) - median SNR expressed at a shared reference power
+  (`ref_power_dbm`, default 37 = 5 W): `snr + (ref_power - power)` per beacon. This
+  de-confounds transmit power, so WSPR paths become comparable. Higher is better.
+- **`median_power_dbm`** (WSPR) - median reported TX power in dBm.
 - **`openness`** - fraction of time-slots in a period that had at least one decode
   (0..1). Path-scoped; the "how often is it open" measure.
 - **`observations`** - count of observations behind a value.
 - **`grids`** - distinct grids heard (spread); band-scoped activity only.
 - **`distance`** - great-circle distance in the result's `units` (km or mi): the path
-  length between origin and dest (`channel`, `trend/path`); the range from the center or
-  fixed point to each cell (`map`/`coverage`); or, for `trend/band`, the median length of
+  length between origin and dest (`channel`, `trend/path`). The range from the center or
+  fixed point to each cell (`map`/`coverage`). For `trend/band`, the median length of
   the paths heard in that bucket (a reach curve over time, and a selectable chart metric).
-  The top-level `units` field names the unit. Surfaces geometry grids alone do not convey.
 - **`bearing`** - initial great-circle bearing in degrees (0-360): origin to dest for
-  path queries, or center/fixed point to each cell for `map` and `coverage`. The companion to
-  `distance` for directional/antenna decisions.
-- **`confidence`** - 0..1 trust. Inputs vary by endpoint: `channel` and `coverage` use
-  volume x freshness x widening-penalty; `trend` and `band` activity use volume
+  path queries, or center/fixed point to each cell for `map` and `coverage`.
+- **`confidence`** - 0-1 trust. Inputs vary by endpoint: `channel` and `coverage` use
+  volume x freshness x widening-penalty. `trend` and `band` activity use volume
   only (historical data does not go stale, and they do not widen).
 - **`deviation`** - current minus baseline (anomaly endpoints).
 
@@ -155,6 +156,8 @@ a summary, except the registry/stat queries.
 | `bands` | all | optional filter list |
 | `at` | now | reference time |
 | `widen` | `true` | broaden grid match if sparse |
+| `ref_power_dbm` | `37` | reference TX power (dBm) WSPR SNR is normalized to |
+| `rank` | `ft8` | rank bands by `ft8` quality or `wspr` ref_snr_db |
 
 ```
 GET /api/v1/channel?origin=FN19&dest=EM&window=30m
@@ -167,25 +170,34 @@ GET /api/v1/channel?origin=FN19&dest=EM&window=30m
     "dest":   { "grid": "EM",   "lat": 38.0, "lon": -90.0 },
     "distance": 1287.4, "units": "km", "bearing": 246.8,
     "at": 1781388000, "window": "30m",
-    "ranked": ["40m", "20m"],
-    "bands": [
-      {
-        "band": "40m",
-        "quality": 0.71, "median_snr_db": -6, "confidence": 0.66,
-        "evidence": {
-          "observations": 38, "reciprocal": 31,
-          "last_seen": 1781387950, "match_precision": 4
-        }
+    "ref_power_dbm": 37, "rank": "ft8", "ranked": ["40m", "20m"],
+    "bands": {
+      "40m": {
+        "ft8":  { "quality": 0.71, "median_snr_db": -6, "confidence": 0.66,
+                  "observations": 38, "reciprocal": 31, "last_seen": 1781387950, "match_precision": 4 },
+        "wspr": { "ref_snr_db": -9, "median_snr_db": -16, "median_power_dbm": 30, "confidence": 0.40,
+                  "observations": 12, "reciprocal": 12, "last_seen": 1781387900, "match_precision": 4 }
+      },
+      "20m": {
+        "ft8":  { "quality": 0.40, "median_snr_db": -14, "confidence": 0.55,
+                  "observations": 9, "reciprocal": 7, "last_seen": 1781387800, "match_precision": 4 },
+        "wspr": null
       }
-    ]
+    }
   }
 }
 ```
 
-`ranked` is the headline (try 40m, then 20m). `quality`/`median_snr_db` give
-strength, `confidence` how much to trust it, `evidence` the basis (including how
-much leaned on the reciprocity assumption, and the grid precision actually
-matched).
+Each band carries an `ft8` and a `wspr` object - either can be `null` when that
+mode has no data for the path. FT8's `quality`/`median_snr_db` give strength.
+WSPR's `ref_snr_db` is the SNR each beacon would have produced at `ref_power_dbm`,
+which makes paths comparable. `confidence` is how much to trust each.
+
+`rank` selects the sort metric (`ft8` quality or `wspr` ref_snr_db); `ranked`
+lists, best first, only the bands carrying that basis (a band with no data for the
+rank mode stays in `bands` but is dropped from `ranked`). If the requested rank
+mode has no data anywhere it falls back to the other, and the result's `rank`
+field reports the basis actually used.
 
 ## channel/anomaly
 
@@ -348,6 +360,7 @@ monitors. Origin-agnostic area for a single band.
 | `radius` | `2000` | extent |
 | `units` | `km` | `km` or `mi` |
 | `band` | `40m` | single band |
+| `mode` | `FT8` | `FT8` or `WSPR` |
 | `resolution` | `medium` | cell size |
 | `window` | `1h` | recent window |
 
@@ -358,7 +371,7 @@ GET /api/v1/map?origin=FN19&radius=2000&units=km&band=40m&resolution=medium
 {
   "result": {
     "origin": { "grid": "FN19", "lat": 49.5, "lon": -77.0 },
-    "radius": 2000, "units": "km", "band": "40m", "resolution": "medium", "window": "1h",
+    "radius": 2000, "units": "km", "band": "40m", "mode": "FT8", "resolution": "medium", "window": "1h",
     "cells": [
       { "grid": "EM48", "lat": 38.5, "lon": -92.0, "distance": 540.2, "bearing": 261.0, "quality": 0.78, "median_snr_db": -7,  "observations": 142 },
       { "grid": "FN42", "lat": 42.5, "lon": -71.0, "distance": 480.1, "bearing": 74.0, "quality": 0.55, "median_snr_db": -11, "observations": 58 }
@@ -385,6 +398,8 @@ cell. Specify one endpoint or the other (origin or dest).
 | `band` | best per cell | optional single band |
 | `resolution` | `medium` | cell size |
 | `window` | `30m` | recent window |
+| `ref_power_dbm` | `37` | reference TX power for WSPR `ref_snr_db` |
+| `rank` | `ft8` | sort cells by `ft8` quality or `wspr` ref_snr_db |
 
 ```
 GET /api/v1/coverage?origin=FN19&radius=2000&units=km&resolution=medium
@@ -394,14 +409,21 @@ GET /api/v1/coverage?origin=FN19&radius=2000&units=km&resolution=medium
   "result": {
     "origin": { "grid": "FN19", "lat": 49.5, "lon": -77.0 },
     "radius": 2000, "units": "km", "resolution": "medium", "window": "30m",
+    "ref_power_dbm": 37, "rank": "ft8",
     "cells": [
-      { "grid": "EM48", "lat": 38.5, "lon": -92.0, "band": "40m", "distance": 540.2, "bearing": 261.0, "quality": 0.72, "median_snr_db": -7,  "confidence": 0.66, "observations": 41 },
-      { "grid": "FM18", "lat": 38.9, "lon": -77.0, "band": "20m", "distance": 62.0, "bearing": 200.0, "quality": 0.60, "median_snr_db": -10, "confidence": 0.50, "observations": 12 }
+      { "grid": "EM48", "lat": 38.5, "lon": -92.0, "distance": 540.2, "bearing": 261.0,
+        "ft8":  { "band": "40m", "quality": 0.72, "median_snr_db": -7, "confidence": 0.66, "observations": 41 },
+        "wspr": { "band": "30m", "ref_snr_db": -8, "median_snr_db": -15, "median_power_dbm": 30, "confidence": 0.42, "observations": 9 } },
+      { "grid": "FN42", "lat": 42.5, "lon": -71.0, "distance": 480.1, "bearing": 74.0,
+        "ft8":  { "band": "20m", "quality": 0.60, "median_snr_db": -10, "confidence": 0.50, "observations": 12 },
+        "wspr": null }
     ]
   }
 }
 ```
 
-With no `band`, each cell reports the best band to reach it. Pass `band` to fix every
-cell to one band. Cells with no data are omitted: an absent cell means no evidence of a
-path, not that the area is unreachable.
+Each cell carries an `ft8` and a `wspr` object - the best band for that mode (or
+`null`). With no `band`, each mode picks its own best band. Pass `band` to limit
+results to a single band. `rank` sorts the cells (by `ft8` quality or `wspr`
+ref_snr_db). Cells with no data are omitted (an absent cell means no evidence
+of a path, not that the area is unreachable).

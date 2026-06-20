@@ -1,14 +1,13 @@
-"""Subprocess driver for ft8mon.
+"""Subprocess driver for a receiver process (ft8mon or wsprmon).
 
-Generic and decoupled from FT8: spawn a configured command, read its stdout
-line-by-line into a callback, and restart it on exit/crash. Knows nothing about
-message formats, so it can be driven against a real ft8mon binary or, in tests,
-a replay command (e.g. ``cat sample.txt``).
+Decoupled from any message format: spawn a configured command, read its stdout
+line-by-line into a callback, and restart it on exit/crash. It can be driven
+against a real ft8mon/wsprmon binary or, in tests, a replay command (e.g.
+``cat sample.txt``).
 
-ft8mon emits decodes on stdout (verified against ft8mon.cc) and noisy,
-device-dependent ALSA/JACK diagnostics on stderr. We discard stderr so that
-uncontrolled output we have not tested per device can never reach the line
-parser; only stdout is read.
+Both binaries emit decodes on stdout and noisy, device-dependent ALSA/JACK
+diagnostics on stderr. We discard stderr so that uncontrolled output we have not
+tested per device can never reach the line parser; only stdout is read.
 """
 
 from __future__ import annotations
@@ -22,12 +21,13 @@ LineHandler = Callable[[str], None]
 Logger = Callable[[str], None]
 
 
-class Ft8monDriver:
+class ReceiverDriver:
     def __init__(
         self,
         argv: Sequence[str],
         on_line: LineHandler,
         *,
+        label: str = "receiver",
         restart_delay: float = 2.0,
         max_restarts: Optional[int] = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -36,6 +36,7 @@ class Ft8monDriver:
     ):
         self.argv = list(argv)
         self.on_line = on_line
+        self._label = label
         self.restart_delay = restart_delay
         self.max_restarts = max_restarts          # None = restart forever
         self._sleep = sleep
@@ -65,6 +66,7 @@ class Ft8monDriver:
         while not self._stop.is_set():
             proc = self._popen(self.argv)
             self._proc = proc
+            self._log(f"started {self._label}: {' '.join(self.argv)}")
             try:
                 for line in proc.stdout:  # type: ignore[union-attr]
                     if self._stop.is_set():
@@ -76,16 +78,16 @@ class Ft8monDriver:
                         # a still-running ft8mon; log it and keep consuming output.
                         self._log(f"line handler error (skipped): {e}")
             finally:
-                rc = self._reap(proc)
+                self._reap(proc)
 
             if self._stop.is_set():
                 break
 
             self.restarts += 1
             if self.max_restarts is not None and self.restarts > self.max_restarts:
-                self._log(f"ft8mon exited rc={rc}; max_restarts reached, giving up")
+                self._log(f"stopped {self._label}: giving up (reached max restarts)")
                 break
-            self._log(f"ft8mon exited rc={rc}; restarting in {self.restart_delay}s")
+            self._log(f"stopped {self._label}: restarting...")
             self._sleep(self.restart_delay)
 
     @staticmethod

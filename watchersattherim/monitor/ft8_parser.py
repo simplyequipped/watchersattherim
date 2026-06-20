@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterator, Optional
 
+from .observations import GridLookup, Observation, make_observation
+
 # ---------------------------------------------------------------------------
 # Line parsing
 # ---------------------------------------------------------------------------
@@ -204,3 +206,49 @@ def classify(message: str) -> Message:
         )
 
     return Message(Kind.REJECT, reject_reason="unparseable", raw=msg)
+
+
+# ---------------------------------------------------------------------------
+# Observation extraction
+# ---------------------------------------------------------------------------
+
+def extract(
+    msg: Message,
+    decode_snr: int,
+    monitor_grid: str,
+    monitor_call: Optional[str] = None,
+    lookup: Optional[GridLookup] = None,
+) -> list[Observation]:
+    """Produce 0..2 observations from one classified FT8 decode.
+
+    ``lookup(callsign) -> grid | None`` backfills grids from the callsign cache;
+    pass ``None`` to use only grids present in the message.
+    """
+    if lookup is None:
+        def lookup(_call: str) -> Optional[str]:  # noqa: ANN202
+            return None
+
+    out: list[Observation] = []
+
+    # The transmitter is call_de (CQ caller for a CQ). Direct path ends here.
+    tx_call = msg.call_de
+    if tx_call is not None and not msg.de_hashed:
+        tx_grid = msg.grid or lookup(tx_call)
+        if tx_grid is not None:
+            out.append(make_observation("direct", tx_call, tx_grid,
+                                        monitor_call, monitor_grid, decode_snr))
+
+    # Indirect: report given by call_de about call_to -> path call_to -> call_de.
+    if (
+        msg.kind in (Kind.STANDARD, Kind.NONSTD)
+        and msg.report_db is not None
+        and msg.call_to is not None and not msg.to_hashed
+        and msg.call_de is not None and not msg.de_hashed
+    ):
+        a_grid = lookup(msg.call_to)
+        b_grid = lookup(msg.call_de)
+        if a_grid is not None and b_grid is not None:
+            out.append(make_observation("indirect", msg.call_to, a_grid,
+                                        msg.call_de, b_grid, msg.report_db))
+
+    return out

@@ -1,13 +1,14 @@
 """Monitor orchestration: drivers -> pipeline -> batcher/queue -> flush timer.
 
-One ft8mon process per receiver feeds decodes into a shared cache and telemetry
-batcher; a timer flushes a batch to the collector every ``send_interval``. The
-per-decode and flush paths are guarded by a lock so the driver threads and the
-timer don't race.
+One receiver process (ft8mon or wsprmon) per receiver feeds decodes, dispatched
+by mode to its pipeline, into a shared telemetry batcher; a timer flushes a batch
+to the collector every ``send_interval``. The per-decode and flush paths are
+guarded by a lock so the driver threads and the timer don't race.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Callable, Optional
@@ -15,9 +16,9 @@ from typing import Callable, Optional
 from .. import __version__
 from .cache import CallsignCache
 from .config import Config, Receiver
-from .driver import Ft8monDriver
-from .parser import classify, parse_line
-from .pipeline import process_decode
+from .driver import ReceiverDriver
+from .ft8_pipeline import ingest as ft8_ingest
+from .wspr_pipeline import ingest as wspr_ingest
 from .telemetry import TelemetryBatcher, monitor_meta
 from .transport import PendingQueue, Sender, flush_window
 
@@ -74,8 +75,8 @@ class Monitor:
         )
 
         self._lock = threading.Lock()
-        self._drivers: list[Ft8monDriver] = []
-        self._driver_by_band: dict[str, Ft8monDriver] = {}
+        self._drivers: list[ReceiverDriver] = []
+        self._driver_by_name: dict[str, ReceiverDriver] = {}
         self._stop = threading.Event()
         self._window_start = int(self._clock())
 
@@ -87,27 +88,27 @@ class Monitor:
     # --- per-decode -------------------------------------------------------
 
     def handle_line(self, receiver: Receiver, line: str) -> None:
-        decode = parse_line(line)
-        if decode is None:
-            return
-        if self.verbose:
-            print(line, flush=True)
         now = self._clock()
         with self._lock:
+            if receiver.mode == "wspr":
+                result = wspr_ingest(line, self.config.monitor.grid)
+            else:
+                result = ft8_ingest(line, receiver.freq, self.config.monitor.grid,
+                                    self._obs_cache, ts=now)
+            if result is None:
+                return                       # not a decode line
+            if self.verbose:
+                print(line, flush=True)
             self.batcher.note_decode()
             if self._silent_limit > 0:
-                self._window_decodes[receiver.band] = (
-                    self._window_decodes.get(receiver.band, 0) + 1
+                self._window_decodes[receiver.name] = (
+                    self._window_decodes.get(receiver.name, 0) + 1
                 )
-            observations = process_decode(
-                decode, classify(decode.message),
-                self.config.monitor.grid, self._obs_cache, ts=now,
-            )
-            freq_hz = receiver.freq + int(round(decode.freq))
-            for obs in observations:
+            for obs, freq_hz in result:
                 if obs.kind == "indirect" and not self.config.observations.indirect:
                     continue
-                self.batcher.add(obs, ts=_slot(now), freq_hz=freq_hz, band=receiver.band)
+                self.batcher.add(obs, ts=_slot(now), freq_hz=freq_hz,
+                                 band=receiver.band, mode=receiver.mode.upper())
 
     # --- window flush -----------------------------------------------------
 
@@ -124,42 +125,43 @@ class Monitor:
         return ok
 
     def _check_watchdog(self) -> None:
-        """Restart any ft8mon that produced no decodes for too many windows."""
+        """Restart any receiver that produced no decodes for too many windows."""
         if self._silent_limit <= 0:
             return
         with self._lock:
             decodes = dict(self._window_decodes)
             self._window_decodes.clear()
-        for band, driver in self._driver_by_band.items():
-            if decodes.get(band, 0) > 0:
-                self._silent_cycles[band] = 0
+        for name, driver in self._driver_by_name.items():
+            if decodes.get(name, 0) > 0:
+                self._silent_cycles[name] = 0
                 continue
-            n = self._silent_cycles.get(band, 0) + 1
-            self._silent_cycles[band] = n
+            n = self._silent_cycles.get(name, 0) + 1
+            self._silent_cycles[name] = n
             if n >= self._silent_limit:
-                self._log(
-                    f"no decodes from ft8mon [{band}] in {n} window(s); "
-                    f"restarting it (check the audio input)"
-                )
+                self._log(f"no decodes from receiver [{name}] in {n} window(s)")
                 driver.bounce()
-                self._silent_cycles[band] = 0
+                self._silent_cycles[name] = 0
 
     # --- lifecycle --------------------------------------------------------
 
     def run(self) -> None:
         for receiver in self.config.receivers:
-            argv = [self.config.ft8mon_path, *receiver.ft8mon_args()]
-            driver = Ft8monDriver(
+            if receiver.mode == "wspr":
+                argv = [self.config.wsprmon_path,
+                        *receiver.wsprmon_args(self.config.wsprd_path)]
+            else:
+                argv = [self.config.ft8mon_path, *receiver.ft8mon_args()]
+            driver = ReceiverDriver(
                 argv,
                 on_line=lambda line, r=receiver: self.handle_line(r, line),
+                label=f"{os.path.basename(argv[0])} [{receiver.name}]",
                 logger=self._log,
             )
             self._drivers.append(driver)
-            self._driver_by_band[receiver.band] = driver
+            self._driver_by_name[receiver.name] = driver
             threading.Thread(
-                target=driver.run, name=f"ft8mon-{receiver.band}", daemon=True
+                target=driver.run, name=f"{receiver.mode}-{receiver.name}", daemon=True
             ).start()
-            self._log(f"started ft8mon [{receiver.band}]: {' '.join(argv)}")
 
         while not self._stop.wait(self.config.collector.send_interval):
             self.flush()

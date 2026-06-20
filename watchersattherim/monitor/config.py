@@ -1,9 +1,11 @@
 """Load and validate the monitor's INI configuration.
 
-Only ``[monitor] grid``, at least one ``[receiver:*]``, and
+Only ``[monitor] grid``, at least one enabled ``[receiver:*]``, and
 ``[collector] address`` are required; everything else has a default. Each
-``[receiver:NAME]`` section is one ft8mon process (NAME is the band); its input
-is one of ``card`` (audio device), ``path`` (WAV file), or ``input`` (SDR).
+``[receiver:NAME]`` section is one receiver process: NAME is its unique id,
+``band`` defaults to NAME, ``mode`` is ``ft8`` (default) or ``wspr``, and
+``enabled = false`` keeps a section configured but not running. Its input is
+one of ``card`` (audio device), ``path`` (WAV file), or ``input`` (SDR).
 """
 
 from __future__ import annotations
@@ -31,9 +33,11 @@ def _mhz(freq_hz: int) -> str:
 
 @dataclass
 class Receiver:
+    name: str                       # unique receiver id (the section name)
     band: str
     freq: int
     kind: str                       # "audio" | "file" | "sdr"
+    mode: str = "ft8"               # "ft8" | "wspr"
     card: Optional[int] = None
     channel: int = 0
     path: Optional[str] = None
@@ -42,14 +46,34 @@ class Receiver:
     ip: Optional[str] = None
     args: list = field(default_factory=list)
 
-    def ft8mon_args(self) -> list[str]:
-        """The ``-card …`` arguments this receiver launches ft8mon with."""
+    def _source_args(self) -> list[str]:
+        """The ``-card …`` input selector shared by ft8mon and wsprmon."""
         if self.kind == "audio":
-            return ["-card", str(self.card), str(self.channel), *self.args]
+            return ["-card", str(self.card), str(self.channel)]
         if self.kind == "file":
-            return ["-card", "file", self.path, *self.args]
+            return ["-card", "file", self.path]
         ident = (self.serial or "") if self.input == "airspy" else self.ip
-        return ["-card", self.input, f"{ident},{_mhz(self.freq)}", *self.args]
+        return ["-card", self.input, f"{ident},{_mhz(self.freq)}"]
+
+    def ft8mon_args(self) -> list[str]:
+        """Arguments this receiver launches ft8mon with."""
+        return [*self._source_args(), *self.args]
+
+    def wsprmon_args(self, wsprd_path: Optional[str] = None) -> list[str]:
+        """Arguments this receiver launches wsprmon with.
+
+        wsprmon takes the dial via ``-f`` and reads a file via ``-file`` (last,
+        as it consumes the rest); audio/SDR reuse the shared ``-card`` selector.
+        """
+        args: list[str] = []
+        if wsprd_path:
+            args += ["-wsprd", wsprd_path]
+        args += ["-f", _mhz(self.freq)]
+        if self.kind == "file":
+            args += [*self.args, "-file", self.path]
+        else:
+            args += [*self._source_args(), *self.args]
+        return args
 
 
 # --- config sections ------------------------------------------------------
@@ -109,6 +133,8 @@ class Config:
     receivers: list[Receiver]
     collector: Collector
     ft8mon_path: str = "ft8mon"
+    wsprmon_path: str = "wsprmon"
+    wsprd_path: Optional[str] = None        # None: wsprmon self-resolves wsprd
     restart_after_silent_cycles: int = 0   # 0 disables the no-decode watchdog
     observations: Observations = field(default_factory=Observations)
     cache: Cache = field(default_factory=Cache)
@@ -149,11 +175,14 @@ def from_parser(cp: configparser.ConfigParser) -> Config:
     storage = Storage(dir=cp.get("storage", "dir", fallback="~/.watchersattherim"))
     reticulum = Reticulum(config_dir=cp.get("reticulum", "config_dir", fallback=None))
 
+    wsprd_path = cp.get("wsprmon", "wsprd_path", fallback=None)
     return Config(
         monitor=monitor,
         receivers=receivers,
         collector=collector,
         ft8mon_path=os.path.expanduser(cp.get("ft8mon", "path", fallback="ft8mon")),
+        wsprmon_path=os.path.expanduser(cp.get("wsprmon", "path", fallback="wsprmon")),
+        wsprd_path=os.path.expanduser(wsprd_path) if wsprd_path else None,
         restart_after_silent_cycles=cp.getint(
             "ft8mon", "restart_after_silent_cycles", fallback=0
         ),
@@ -182,22 +211,32 @@ def _monitor(cp: configparser.ConfigParser) -> Monitor:
 
 def _receivers(cp: configparser.ConfigParser) -> list[Receiver]:
     receivers: list[Receiver] = []
+    any_section = False
     for section in cp.sections():
         if not section.startswith("receiver:"):
             continue
-        band = section.split(":", 1)[1].strip()
-        if not band:
-            raise ConfigError(f"[{section}] has no band name")
-        receivers.append(_receiver(cp, section, band))
-    if not receivers:
+        any_section = True
+        name = section.split(":", 1)[1].strip()
+        if not name:
+            raise ConfigError(f"[{section}] has no name")
+        if not cp.getboolean(section, "enabled", fallback=True):
+            continue
+        receivers.append(_receiver(cp, section, name))
+    if not any_section:
         raise ConfigError("at least one [receiver:NAME] section is required")
+    if not receivers:
+        raise ConfigError("no enabled [receiver:NAME] sections (all enabled=false)")
     return receivers
 
 
-def _receiver(cp, section: str, band: str) -> Receiver:
+def _receiver(cp, section: str, name: str) -> Receiver:
     freq = cp.getint(section, "freq", fallback=None)
     if freq is None:
         raise ConfigError(f"[{section}] freq is required")
+    band = cp.get(section, "band", fallback=name)
+    mode = cp.get(section, "mode", fallback="ft8").lower()
+    if mode not in ("ft8", "wspr"):
+        raise ConfigError(f"[{section}] mode must be ft8 or wspr, got {mode!r}")
     card = cp.get(section, "card", fallback=None)
     path = cp.get(section, "path", fallback=None)
     inp = cp.get(section, "input", fallback=None)
@@ -211,9 +250,11 @@ def _receiver(cp, section: str, band: str) -> Receiver:
 
     if card is not None:
         device, channel = _parse_card(section, card)
-        return Receiver(band, freq, "audio", card=device, channel=channel, args=args)
+        return Receiver(name, band, freq, "audio", mode=mode,
+                        card=device, channel=channel, args=args)
     if path is not None:
-        return Receiver(band, freq, "file", path=os.path.expanduser(path), args=args)
+        return Receiver(name, band, freq, "file", mode=mode,
+                        path=os.path.expanduser(path), args=args)
 
     inp = inp.lower()
     if inp not in SDR_INPUTS:
@@ -222,7 +263,8 @@ def _receiver(cp, section: str, band: str) -> Receiver:
     ip = cp.get(section, "ip", fallback=None)
     if inp in SDR_NEEDS_IP and not ip:
         raise ConfigError(f"[{section}] input '{inp}' requires ip")
-    return Receiver(band, freq, "sdr", input=inp, serial=serial, ip=ip, args=args)
+    return Receiver(name, band, freq, "sdr", mode=mode,
+                    input=inp, serial=serial, ip=ip, args=args)
 
 
 def _parse_card(section: str, card: str) -> tuple[int, int]:
