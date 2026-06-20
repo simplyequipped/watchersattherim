@@ -11,9 +11,13 @@
 Description=watchersattherim FT8/WSPR propagation monitor
 After=network-online.target sound.target
 Wants=network-online.target
+# Require rnsd if running as a system service (shared RNS instance)
+#After=rnsd.service
+#PartOf=rnsd.service
 
 [Service]
 User=__USER__
+WorkingDirectory=/home/__USER__
 ExecStart=__VENV__/bin/watr-monitor -c __CONFIG__
 Restart=on-failure
 RestartSec=10

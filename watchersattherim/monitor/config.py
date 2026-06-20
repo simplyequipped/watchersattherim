@@ -59,15 +59,20 @@ class Receiver:
         """Arguments this receiver launches ft8mon with."""
         return [*self._source_args(), *self.args]
 
-    def wsprmon_args(self, wsprd_path: Optional[str] = None) -> list[str]:
+    def wsprmon_args(self, wsprd_path: Optional[str] = None,
+                     workdir: Optional[str] = None) -> list[str]:
         """Arguments this receiver launches wsprmon with.
 
         wsprmon takes the dial via ``-f`` and reads a file via ``-file`` (last,
         as it consumes the rest); audio/SDR reuse the shared ``-card`` selector.
+        ``workdir`` (``-a``) is where wsprmon writes its per-cycle wav; each
+        receiver gets its own so concurrent receivers never collide.
         """
         args: list[str] = []
         if wsprd_path:
             args += ["-wsprd", wsprd_path]
+        if workdir:
+            args += ["-a", workdir]
         args += ["-f", _mhz(self.freq)]
         if self.kind == "file":
             args += [*self.args, "-file", self.path]

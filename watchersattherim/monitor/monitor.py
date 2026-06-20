@@ -147,8 +147,13 @@ class Monitor:
     def run(self) -> None:
         for receiver in self.config.receivers:
             if receiver.mode == "wspr":
+                workdir = os.path.join(
+                    os.path.expanduser(self.config.storage.dir),
+                    "wsprmon", receiver.name,
+                )
+                os.makedirs(workdir, exist_ok=True)
                 argv = [self.config.wsprmon_path,
-                        *receiver.wsprmon_args(self.config.wsprd_path)]
+                        *receiver.wsprmon_args(self.config.wsprd_path, workdir)]
             else:
                 argv = [self.config.ft8mon_path, *receiver.ft8mon_args()]
             driver = ReceiverDriver(

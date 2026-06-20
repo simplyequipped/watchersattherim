@@ -141,6 +141,21 @@ def test_wsprmon_args_file_puts_file_last():
     assert r.wsprmon_args() == ["-f", "7.0386", "-file", "/tmp/x.wav"]
 
 
+def test_wsprmon_args_workdir():
+    r = _one_receiver("[receiver:40m-wspr]\nmode = wspr\nfreq = 7038600\ncard = 2:0")
+    assert r.wsprmon_args("/opt/wsprd", "/var/wd") == [
+        "-wsprd", "/opt/wsprd", "-a", "/var/wd", "-f", "7.0386", "-card", "2", "0"
+    ]
+
+
+def test_wsprmon_args_workdir_before_file():
+    # -a must precede -file, which consumes the rest of argv
+    r = _one_receiver("[receiver:w]\nmode = wspr\nfreq = 7038600\npath = /tmp/x.wav")
+    assert r.wsprmon_args(workdir="/var/wd") == [
+        "-a", "/var/wd", "-f", "7.0386", "-file", "/tmp/x.wav"
+    ]
+
+
 def test_wsprmon_and_wsprd_paths():
     c = loads(
         "[monitor]\ngrid = FN19\n[collector]\naddress = d\n"

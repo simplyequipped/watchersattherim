@@ -1,5 +1,10 @@
 ## Changelog
 
+### Version 0.3.1
+
+- fixed `wsprmon` receivers aborting under a systemd service due to missing wav file write permissions in default service working directory
+- updated monitor and collector systemd service templates
+
 ### Version 0.3.0
 
 - added WSPR support via `wsprmon`
