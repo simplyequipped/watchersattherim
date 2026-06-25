@@ -1,5 +1,9 @@
 ## Changelog
 
+### Version 0.4.2
+
+- added per-receiver `distance_snr_threshold_km` and `distance_snr_threshold_mi` to drop fabricated decodes too strong for their distance (see example config file)
+
 ### Version 0.4.1
 
 - added a `[blacklist]` config section with `grids`, `callsigns`, and `freqs` lists

@@ -16,6 +16,7 @@ equally valid:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Optional, Protocol
@@ -47,6 +48,31 @@ def grid_to_latlon(grid: str) -> tuple[float, float]:
         lat += 0.5                   # center of 1-degree square
 
     return round(lat, 4), round(lon, 4)
+
+
+def great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two lat/lon points."""
+    r1, r2 = math.radians(lat1), math.radians(lat2)
+    cos_d = (math.sin(r1) * math.sin(r2)
+             + math.cos(r1) * math.cos(r2) * math.cos(math.radians(lon2 - lon1)))
+    return 6371.0 * math.acos(max(-1.0, min(1.0, cos_d)))
+
+
+def snr_exceeds_ceiling(ceiling, distance_km: float, snr: int) -> bool:
+    """True if ``snr`` is above the plausibility ceiling that applies at ``distance_km``.
+
+    ``ceiling`` is a sorted tuple of ``(distance_km, max_snr_db)`` pairs. The cap is
+    the pair with the largest distance not exceeding ``distance_km``; below the
+    smallest listed distance there is no cap. Used to drop strong-at-distance
+    decodes (physically impossible, so fabricated) while keeping weak long-haul.
+    """
+    cap = None
+    for d, s in ceiling:
+        if distance_km >= d:
+            cap = s
+        else:
+            break
+    return cap is not None and snr > cap
 
 
 # ---------------------------------------------------------------------------

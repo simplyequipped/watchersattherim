@@ -285,6 +285,40 @@ def test_blacklist_bad_freq_errors():
         _blacklist_cfg("freqs = not-a-number\n")
 
 
+# --- per-receiver SNR/distance ceiling ------------------------------------
+
+def _rx_ceiling(body: str):
+    c = loads("[monitor]\ngrid = FN19\n[collector]\naddress = d\n"
+              "[receiver:x]\nfreq = 14074000\ncard = 8\n" + body)
+    return c.receivers[0].snr_ceiling
+
+
+def test_snr_ceiling_default_empty():
+    assert _rx_ceiling("") == ()
+
+
+def test_snr_ceiling_single_pair():
+    assert _rx_ceiling("distance_snr_threshold_km = 13000:-15\n") == ((13000, -15),)
+
+
+def test_snr_ceiling_multiple_pairs_sorted():
+    assert _rx_ceiling("distance_snr_threshold_km = 13000:-15, 9000:15\n") \
+        == ((9000, 15), (13000, -15))
+
+
+def test_snr_ceiling_miles_converted_and_merged():
+    # 8078 mi ~= 13000 km; km + mi keys merge into one sorted ceiling
+    assert _rx_ceiling("distance_snr_threshold_mi = 8078:-15\n") == ((13000, -15),)
+    assert _rx_ceiling("distance_snr_threshold_km = 9000:15\n"
+                       "distance_snr_threshold_mi = 8078:-15\n") \
+        == ((9000, 15), (13000, -15))
+
+
+def test_snr_ceiling_bad_entry_errors():
+    with pytest.raises(ConfigError, match="distance:snr"):
+        _rx_ceiling("distance_snr_threshold_km = 13000\n")   # missing :snr
+
+
 # --- mode / band / wsprmon ------------------------------------------------
 
 def test_mode_defaults_to_ft8():

@@ -52,6 +52,7 @@ class Receiver:
     args: list = field(default_factory=list)
     min_decode_snr: int = -25            # drop this receiver's decodes below this SNR
     restart_after_silent_sec: int = 0    # 0 = no-decode watchdog disabled for this receiver
+    snr_ceiling: tuple = ()              # ((distance_km, max_snr), ...) sorted; drop strong-at-distance
 
     def _source_args(self) -> list[str]:
         """The ``-card …`` input selector shared by ft8mon and wsprmon."""
@@ -351,6 +352,33 @@ def _receivers(cp: configparser.ConfigParser,
     return receivers
 
 
+_MI_TO_KM = 1.609344
+
+
+def _parse_snr_ceiling(cp, section: str) -> tuple:
+    """Parse a receiver's distance:snr plausibility ceiling from km and/or mi keys.
+
+    Each `distance:snr` pair caps the SNR allowed at or beyond that distance (a
+    strong decode past it is physically impossible, so fabricated). mi distances are
+    converted to km and merged. Returns the pairs sorted by distance ascending.
+    """
+    pairs: list[tuple[int, int]] = []
+    for key, factor in (("distance_snr_threshold_km", 1.0),
+                        ("distance_snr_threshold_mi", _MI_TO_KM)):
+        raw = cp.get(section, key, fallback="").strip()
+        for tok in re.split(r"[,\s]+", raw):
+            if not tok:
+                continue
+            try:
+                dist, snr = tok.split(":", 1)
+                pairs.append((int(round(int(dist) * factor)), int(snr)))
+            except ValueError:
+                raise ConfigError(
+                    f"[{section}] {key}: invalid entry {tok!r} (use distance:snr pairs)"
+                ) from None
+    return tuple(sorted(pairs))
+
+
 def _receiver(cp, section: str, name: str, sdr: Optional[Sdr]) -> Receiver:
     freq = cp.getint(section, "freq", fallback=None)
     if freq is None:
@@ -369,7 +397,8 @@ def _receiver(cp, section: str, name: str, sdr: Optional[Sdr]) -> Receiver:
                         fallback=-25 if mode == "ft8" else -30)
     ras = cp.get(section, "restart_after_silent", fallback=None)
     common = dict(mode=mode, args=args, min_decode_snr=min_snr,
-                  restart_after_silent_sec=parse_duration(ras) if ras else 0)
+                  restart_after_silent_sec=parse_duration(ras) if ras else 0,
+                  snr_ceiling=_parse_snr_ceiling(cp, section))
 
     use_sdr = False
     if cp.has_option(section, "sdr"):

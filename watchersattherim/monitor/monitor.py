@@ -94,12 +94,14 @@ class Monitor:
             if receiver.mode == "wspr":
                 result = wspr_ingest(line, receiver.freq, self.config.monitor.grid,
                                      min_snr=receiver.min_decode_snr,
-                                     blacklist=self.config.blacklist)
+                                     blacklist=self.config.blacklist,
+                                     snr_ceiling=receiver.snr_ceiling)
             else:
                 result = ft8_ingest(line, receiver.freq, self.config.monitor.grid,
                                     self._obs_cache, ts=now,
                                     min_snr=receiver.min_decode_snr,
-                                    blacklist=self.config.blacklist)
+                                    blacklist=self.config.blacklist,
+                                    snr_ceiling=receiver.snr_ceiling)
             if result is None:
                 return                       # not a decode line
             self.batcher.note_decode()

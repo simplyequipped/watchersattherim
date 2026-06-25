@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .observations import Observation
+from .observations import (
+    Observation, grid_to_latlon, great_circle_km, snr_exceeds_ceiling,
+)
 from .wspr_parser import classify, extract, parse_line
 
 
@@ -21,6 +23,7 @@ def ingest(
     monitor_call: Optional[str] = None,
     min_snr: int = -1000,
     blacklist=None,
+    snr_ceiling=(),
 ) -> Optional[list[tuple[Observation, int]]]:
     """Parse one wsprmon line into (observation, freq_hz) pairs for the monitor.
 
@@ -40,5 +43,10 @@ def ingest(
     freq_hz = dial_hz + int(round(decode.freq_hz))
     if blacklist is not None and blacklist.blocks(spot.grid, spot.call, freq_hz):
         return []
+    if snr_ceiling:
+        mlat, mlon = grid_to_latlon(monitor_grid)
+        tlat, tlon = grid_to_latlon(spot.grid)
+        if snr_exceeds_ceiling(snr_ceiling, great_circle_km(mlat, mlon, tlat, tlon), decode.snr):
+            return []
     obs = extract(spot, decode.snr, monitor_grid, monitor_call)
     return [(o, freq_hz) for o in obs]
