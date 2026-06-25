@@ -194,6 +194,30 @@ class Reticulum:
     config_dir: Optional[str] = None
 
 
+_FREQ_TOL_HZ = 10   # a bare blacklist freq matches within this many Hz (decoder jitter)
+
+
+@dataclass(frozen=True)
+class Blacklist:
+    """Decodes to drop at the monitor before they become observations.
+
+    Matches are global (every receiver). ``grids`` and ``calls`` match the
+    transmitter's. ``freqs`` are absolute RF frequencies (the dial plus the decode's
+    audio offset) as inclusive (lo, hi) Hz ranges, so an entry targets one band's
+    birdie without touching receivers on other bands.
+    """
+    grids: frozenset[str] = frozenset()
+    calls: frozenset[str] = frozenset()
+    freqs: tuple[tuple[int, int], ...] = ()
+
+    def blocks(self, tx_grid: str, tx_call: Optional[str], freq_hz: int) -> bool:
+        if tx_grid and tx_grid.upper() in self.grids:
+            return True
+        if tx_call and tx_call.upper() in self.calls:
+            return True
+        return any(lo <= freq_hz <= hi for lo, hi in self.freqs)
+
+
 @dataclass
 class Config:
     monitor: Monitor
@@ -207,6 +231,7 @@ class Config:
     cache: Cache = field(default_factory=Cache)
     storage: Storage = field(default_factory=Storage)
     reticulum: Reticulum = field(default_factory=Reticulum)
+    blacklist: Blacklist = field(default_factory=Blacklist)
 
 
 # --- loading --------------------------------------------------------------
@@ -248,6 +273,7 @@ def from_parser(cp: configparser.ConfigParser) -> Config:
 
     wsprd_path = cp.get("wsprmon", "wsprd_path", fallback=None)
     return Config(
+        blacklist=_blacklist(cp),
         monitor=monitor,
         receivers=receivers,
         collector=collector,
@@ -277,6 +303,31 @@ def _monitor(cp: configparser.ConfigParser) -> Monitor:
         lon = glon if lon is None else lon
     debug = cp.getboolean("monitor", "debug", fallback=False)
     return Monitor(grid=grid, lat=lat, lon=lon, debug=debug)
+
+
+def _blacklist(cp: configparser.ConfigParser) -> Blacklist:
+    def items(key: str) -> list[str]:
+        raw = cp.get("blacklist", key, fallback="").strip()
+        return [t for t in re.split(r"[,\s]+", raw) if t]
+
+    freqs: list[tuple[int, int]] = []
+    for tok in items("freqs"):
+        try:
+            if "-" in tok:
+                lo, hi = tok.split("-", 1)
+                freqs.append((int(lo), int(hi)))
+            else:
+                v = int(tok)
+                freqs.append((v - _FREQ_TOL_HZ, v + _FREQ_TOL_HZ))
+        except ValueError:
+            raise ConfigError(
+                f"[blacklist] freqs: invalid entry {tok!r} (use Hz values or lo-hi ranges)"
+            ) from None
+    return Blacklist(
+        grids=frozenset(g.upper() for g in items("grids")),
+        calls=frozenset(c.upper() for c in items("callsigns")),
+        freqs=tuple(freqs),
+    )
 
 
 def _receivers(cp: configparser.ConfigParser,

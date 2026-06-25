@@ -66,6 +66,7 @@ def ingest(
     monitor_call: Optional[str] = None,
     ts: Optional[float] = None,
     min_snr: int = -1000,
+    blacklist=None,
 ) -> Optional[list[tuple[Observation, int]]]:
     """Parse one ft8mon line into (observation, freq_hz) pairs for the monitor.
 
@@ -80,6 +81,10 @@ def ingest(
     if decode.snr < min_snr:
         return []
     freq_hz = dial_hz + int(round(decode.freq))
-    obs = process_decode(decode, classify(decode.message), monitor_grid, cache,
-                         monitor_call, ts)
+    msg = classify(decode.message)
+    # Block before learning, so a blacklisted decode never pollutes the callsign
+    # cache (and so can never resurface via a cache-backfilled grid).
+    if blacklist is not None and blacklist.blocks(msg.grid, msg.call_de, freq_hz):
+        return []
+    obs = process_decode(decode, msg, monitor_grid, cache, monitor_call, ts)
     return [(o, freq_hz) for o in obs]

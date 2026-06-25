@@ -298,3 +298,16 @@ def test_verbose_debug_shows_raw_firehose(tmp_path, capsys):
     mon.handle_line(r, "184630 -28 130  2.18 1638.0 K1ABC W2DEF EM13") # below the SNR cut
     out = capsys.readouterr().out
     assert "i3=5 n3=6" in out and "K1ABC W2DEF" in out                 # firehose
+
+
+def test_blacklist_drops_decode_but_still_counts_it(tmp_path):
+    cfg = make_config(tmp_path, extra="[blacklist]\ngrids = FN20\n")
+    sender = RecordingSender()
+    mon = Monitor(cfg, sender, clock=fixed_clock())
+    r = cfg.receivers[0]
+    mon.handle_line(r, "024015   0 174  1.31 2185.1 CQ  W3GO  FN20")    # blacklisted grid
+    mon.handle_line(r, "024015   0 174  1.31 1000.0 CQ KE2CUR FN31")    # allowed
+    assert mon.flush() is True
+    obs = sender.sent[0]["observations"]
+    assert {o["tx_grid"] for o in obs} == {"FN31"}                      # FN20 dropped
+    assert sender.sent[0]["stats"]["decodes_seen"] == 2                 # both still counted

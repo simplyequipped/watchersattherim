@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from watchersattherim.monitor.config import (
-    ConfigError, load, loads, parse_duration, sdrfanout_argv,
+    Blacklist, ConfigError, load, loads, parse_duration, sdrfanout_argv,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -235,6 +235,54 @@ def test_sdrfanout_argv_omits_auto_fields():
         assert flag not in argv
     assert argv[0] == "sdrfanout"
     assert argv[-2:] == ["-ch", f"7074000:{c.receivers[0].path}"]
+
+
+# --- blacklist ------------------------------------------------------------
+
+def test_no_blacklist_section_blocks_nothing():
+    bl = loads(MINIMAL).blacklist
+    assert bl == Blacklist()
+    assert not bl.blocks("RF73", "ZL1ABC", 7076000)
+
+
+def _blacklist_cfg(body: str) -> Blacklist:
+    return loads(MINIMAL + "\n[blacklist]\n" + body).blacklist
+
+
+def test_blacklist_parses_grids_and_calls_uppercased():
+    bl = _blacklist_cfg("grids = rf73, QF55\ncallsigns = zl1abc\n")
+    assert bl.grids == {"RF73", "QF55"}
+    assert bl.calls == {"ZL1ABC"}
+
+
+def test_blacklist_grid_match_is_case_insensitive():
+    bl = _blacklist_cfg("grids = RF73\n")
+    assert bl.blocks("rf73", None, 7076000)
+    assert not bl.blocks("FN42", None, 7076000)
+
+
+def test_blacklist_callsign_match():
+    bl = _blacklist_cfg("callsigns = N0CALL\n")
+    assert bl.blocks("FN42", "n0call", 7076000)
+    assert not bl.blocks("FN42", "W1AW", 7076000)
+
+
+def test_blacklist_freq_range_and_single_tolerance():
+    bl = _blacklist_cfg("freqs = 7075120-7075130, 14074500\n")
+    assert bl.blocks("", None, 7075125)            # inside the range
+    assert not bl.blocks("", None, 7075131)        # just past the range
+    assert bl.blocks("", None, 14074495)           # within +/-10 Hz of the single value
+    assert not bl.blocks("", None, 14074520)       # outside the tolerance window
+
+
+def test_blacklist_freqs_newline_separated():
+    bl = _blacklist_cfg("freqs =\n    7075120-7075130\n    14074500\n")
+    assert len(bl.freqs) == 2
+
+
+def test_blacklist_bad_freq_errors():
+    with pytest.raises(ConfigError, match="invalid entry"):
+        _blacklist_cfg("freqs = not-a-number\n")
 
 
 # --- mode / band / wsprmon ------------------------------------------------

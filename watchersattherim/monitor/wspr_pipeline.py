@@ -20,6 +20,7 @@ def ingest(
     monitor_grid: str,
     monitor_call: Optional[str] = None,
     min_snr: int = -1000,
+    blacklist=None,
 ) -> Optional[list[tuple[Observation, int]]]:
     """Parse one wsprmon line into (observation, freq_hz) pairs for the monitor.
 
@@ -37,5 +38,7 @@ def ingest(
     if spot is None:
         return []                       # decode with no grid (type 2): nothing to store
     freq_hz = dial_hz + int(round(decode.freq_hz))
+    if blacklist is not None and blacklist.blocks(spot.grid, spot.call, freq_hz):
+        return []
     obs = extract(spot, decode.snr, monitor_grid, monitor_call)
     return [(o, freq_hz) for o in obs]

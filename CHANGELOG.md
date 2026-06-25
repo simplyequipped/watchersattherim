@@ -1,5 +1,9 @@
 ## Changelog
 
+### Version 0.4.1
+
+- added a `[blacklist]` config section with `grids`, `callsigns`, and `freqs` lists
+
 ### Version 0.4.0
 
 - added `sdrfanout` support for sharing one SDR across multiple receivers (ex. FT8 + WSPR)
