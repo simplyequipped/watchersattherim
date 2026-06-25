@@ -65,15 +65,20 @@ def ingest(
     cache: CallsignCache,
     monitor_call: Optional[str] = None,
     ts: Optional[float] = None,
+    min_snr: int = -1000,
 ) -> Optional[list[tuple[Observation, int]]]:
     """Parse one ft8mon line into (observation, freq_hz) pairs for the monitor.
 
     Returns None for a non-decode line; a list (possibly empty) for a decode.
-    FT8 frequency is the dial plus the decode's audio offset.
+    FT8 frequency is the dial plus the decode's audio offset. A decode whose SNR is
+    below ``min_snr`` still counts as a decode (the receiver is alive) but yields no
+    observations. Too weak to trust, and it would poison the dataset.
     """
     decode = parse_line(line)
     if decode is None:
         return None
+    if decode.snr < min_snr:
+        return []
     freq_hz = dial_hz + int(round(decode.freq))
     obs = process_decode(decode, classify(decode.message), monitor_grid, cache,
                          monitor_call, ts)

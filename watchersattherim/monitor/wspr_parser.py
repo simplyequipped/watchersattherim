@@ -5,7 +5,7 @@ tested in isolation against captured wsprmon output.
 
 wsprmon emits one line per decode::
 
-    HHMMSS  SNR  DT  FREQ_MHZ  DRIFT  MESSAGE
+    HHMMSS  SNR  DT  FREQ_HZ  DRIFT  MESSAGE
 
 plus a ``HH:MM:SS decodes: N`` cycle header that is ignored (its colons keep it
 from matching the all-digit timestamp). ``parse_line`` turns a decode line into
@@ -31,9 +31,9 @@ from typing import Iterator, Optional
 
 from .observations import Observation, make_observation
 
-# wsprmon decode line, e.g.:
-#   091800  -9  1.1  14.097046  0  ND6P FN19 30
-# columns: HHMMSS  SNR  DT  FREQ_MHz  DRIFT  message
+# wsprmon decode line (run with -hz, no -f, so FREQ is the audio offset in Hz):
+#   091800  -9  1.1  1446.0  0  ND6P FN19 30
+# columns: HHMMSS  SNR  DT  FREQ_Hz  DRIFT  message
 _DECODE_RE = re.compile(
     r"^(?P<ts>\d{6})\s+"
     r"(?P<snr>-?\d+)\s+"
@@ -54,7 +54,7 @@ class WsprDecode:
     hhmmss: str          # "091800", UTC, start of the 2 min slot
     snr: int             # dB
     dt: float            # seconds, time offset of the signal in the slot
-    freq_mhz: float      # MHz, absolute (dial + audio offset)
+    freq_hz: float       # Hz, audio offset within the passband (watr adds the dial)
     drift: int           # Hz/minute
     message: str         # raw WSPR message, whitespace-trimmed
 
@@ -78,7 +78,7 @@ def parse_line(line: str) -> Optional[WsprDecode]:
         hhmmss=m["ts"],
         snr=int(m["snr"]),
         dt=float(m["dt"]),
-        freq_mhz=float(m["freq"]),
+        freq_hz=float(m["freq"]),
         drift=int(m["drift"]),
         message=m["msg"].strip(),
     )

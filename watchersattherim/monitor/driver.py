@@ -1,13 +1,15 @@
-"""Subprocess driver for a receiver process (ft8mon or wsprmon).
+"""Subprocess driver for a long-running child (ft8mon, wsprmon, or sdrfanout).
 
-Decoupled from any message format: spawn a configured command, read its stdout
-line-by-line into a callback, and restart it on exit/crash. It can be driven
-against a real ft8mon/wsprmon binary or, in tests, a replay command (e.g.
-``cat sample.txt``).
+Decoupled from any message format: spawn a configured command, read one of its
+streams line-by-line into a callback, and restart it on exit/crash. It can be
+driven against a real binary or, in tests, a replay command (e.g. ``cat sample.txt``).
 
-Both binaries emit decodes on stdout and noisy, device-dependent ALSA/JACK
-diagnostics on stderr. We discard stderr so that uncontrolled output we have not
-tested per device can never reach the line parser; only stdout is read.
+Two modes:
+- default (decoders): read **stdout** (the decodes) into ``on_line``. **stderr** is
+  discarded so untested, device-dependent ALSA/JACK noise can never reach the parser.
+- ``capture_stderr=True`` (sdrfanout): the producer has no decode stdout. Its
+  meaningful output (warnings, drops, the channel announce) is on **stderr**, so read
+  stderr into the **logger** and discard stdout.
 """
 
 from __future__ import annotations
@@ -25,8 +27,10 @@ class ReceiverDriver:
     def __init__(
         self,
         argv: Sequence[str],
-        on_line: LineHandler,
+        on_line: Optional[LineHandler] = None,
         *,
+        capture_stderr: bool = False,
+        log_command: bool = False,
         label: str = "receiver",
         restart_delay: float = 2.0,
         max_restarts: Optional[int] = None,
@@ -35,7 +39,9 @@ class ReceiverDriver:
         logger: Optional[Logger] = None,
     ):
         self.argv = list(argv)
-        self.on_line = on_line
+        self.on_line = on_line or (lambda _line: None)
+        self.capture_stderr = capture_stderr
+        self.log_command = log_command
         self._label = label
         self.restart_delay = restart_delay
         self.max_restarts = max_restarts          # None = restart forever
@@ -46,17 +52,18 @@ class ReceiverDriver:
         self._proc: Optional[subprocess.Popen] = None
         self.restarts = 0
 
-    @staticmethod
-    def _default_popen(argv: Sequence[str]) -> "subprocess.Popen":
+    def _default_popen(self, argv: Sequence[str]) -> "subprocess.Popen":
+        # capture_stderr: the producer's signal is on stderr, so discard its (unused)
+        # stdout. Default: read decodes off stdout, discard device-noise stderr.
+        read, drop = ((subprocess.PIPE, subprocess.DEVNULL) if not self.capture_stderr
+                      else (subprocess.DEVNULL, subprocess.PIPE))
         return subprocess.Popen(
             argv,
-            stdout=subprocess.PIPE,
-            # Discard ft8mon's device-dependent ALSA/JACK noise; only decodes (stdout)
-            # should reach the parser. Run ft8mon directly to inspect its diagnostics.
-            stderr=subprocess.DEVNULL,
+            stdout=read,
+            stderr=drop,
             text=True,
             bufsize=1,
-            # Defensive: stdout is ASCII in practice, but a stray byte must never
+            # Defensive: output is ASCII in practice, but a stray byte must never
             # break the read loop (which would wedge the reader in wait()).
             errors="replace",
         )
@@ -66,16 +73,27 @@ class ReceiverDriver:
         while not self._stop.is_set():
             proc = self._popen(self.argv)
             self._proc = proc
-            self._log(f"started {self._label}: {' '.join(self.argv)}")
+            if self.log_command:
+                self._log(f"started {self._label}: {' '.join(self.argv)}")
+            else:
+                self._log(f"started {self._label}")
+            stream = proc.stderr if self.capture_stderr else proc.stdout
             try:
-                for line in proc.stdout:  # type: ignore[union-attr]
+                for line in stream:  # type: ignore[union-attr]
                     if self._stop.is_set():
                         break
+                    text = line.rstrip("\n")
                     try:
-                        self.on_line(line.rstrip("\n"))
+                        if self.capture_stderr:
+                            # Pass producer diagnostics through as-is. The child names
+                            # itself (e.g. "sdrfanout: ...") and "started <label>" above
+                            # tags the source, so re-prefixing here just duplicates it.
+                            self._log(text)
+                        else:
+                            self.on_line(text)
                     except Exception as e:  # noqa: BLE001
                         # One malformed line must never kill the reader and orphan
-                        # a still-running ft8mon; log it and keep consuming output.
+                        # a still-running child. Log it and keep consuming output.
                         self._log(f"line handler error (skipped): {e}")
             finally:
                 self._reap(proc)

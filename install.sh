@@ -1,7 +1,7 @@
 #!/bin/sh
 # watchersattherim installer. Run from a clone of this repo:
 #
-#   ./install.sh monitor      build the decoders (ft8mon, wsprd, wsprmon) and watr
+#   ./install.sh monitor      build the receivers (ft8mon, wsprd, wsprmon, sdrfanout) and watr
 #   ./install.sh collector    install watr only (no binaries, no audio/build deps)
 #
 # Optional settings are environment overrides, e.g.:
@@ -19,6 +19,7 @@ VENV_DIR="${VENV_DIR:-$HOME/.watchersattherim/venv}"
 FT8MON_REPO="${FT8MON_REPO:-https://github.com/simplyequipped/ft8mon.git}"
 WSPRD_REPO="${WSPRD_REPO:-https://github.com/simplyequipped/wsprd.git}"
 WSPRMON_REPO="${WSPRMON_REPO:-https://github.com/simplyequipped/wsprmon.git}"
+SDRFANOUT_REPO="${SDRFANOUT_REPO:-https://github.com/simplyequipped/sdrfanout.git}"
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
@@ -30,7 +31,7 @@ usage() {
     cat <<EOF
 usage: ./install.sh <role> [--config]
 
-  monitor     build the decoders (ft8mon, wsprd, wsprmon) and install watr
+  monitor     build the receivers (ft8mon, wsprd, wsprmon, sdrfanout) and install watr
   collector   install watr only (no binaries, no audio/build deps)
 
   --config    write a ready-to-edit config to ~/.watchersattherim[/collector]
@@ -40,7 +41,7 @@ usage: ./install.sh <role> [--config]
 
 optional environment overrides:
   BIN_DIR (default \$HOME/.local/bin), SRC_DIR, VENV_DIR,
-  FT8MON_REPO, WSPRD_REPO, WSPRMON_REPO
+  FT8MON_REPO, WSPRD_REPO, WSPRMON_REPO, SDRFANOUT_REPO
 EOF
 }
 
@@ -59,6 +60,11 @@ profile_debian_deps() {
     common="git python3 python3-venv python3-pip"
     if [ "$ROLE" = monitor ]; then
         common="$common build-essential libfftw3-dev libsndfile1-dev portaudio19-dev"
+        # SoapySDR for sdrfanout. libsoapysdr-dev's recommends pull the device
+        # module bundle (rtlsdr/hackrf/airspy/... ~30-40 MB), so any supported SDR
+        # works out of the box. To slim it: install libsoapysdr-dev with
+        # --no-install-recommends and add only soapysdr<ver>-module-<device>.
+        common="$common libsoapysdr-dev"
     fi
     say "installing system packages (apt): $common"
     sudo apt-get update -qq
@@ -97,12 +103,14 @@ build_into_bin() {  # src_dir  binary_name
 
 build_binaries() {
     install -d "$SRC_DIR"
-    clone_or_update "$FT8MON_REPO"  "$SRC_DIR/ft8mon"
-    clone_or_update "$WSPRD_REPO"   "$SRC_DIR/wsprd"
-    clone_or_update "$WSPRMON_REPO" "$SRC_DIR/wsprmon"
-    build_into_bin "$SRC_DIR/ft8mon"  ft8mon
-    build_into_bin "$SRC_DIR/wsprd"   wsprd
-    build_into_bin "$SRC_DIR/wsprmon" wsprmon
+    clone_or_update "$FT8MON_REPO"    "$SRC_DIR/ft8mon"
+    clone_or_update "$WSPRD_REPO"     "$SRC_DIR/wsprd"
+    clone_or_update "$WSPRMON_REPO"   "$SRC_DIR/wsprmon"
+    clone_or_update "$SDRFANOUT_REPO" "$SRC_DIR/sdrfanout"
+    build_into_bin "$SRC_DIR/ft8mon"    ft8mon
+    build_into_bin "$SRC_DIR/wsprd"     wsprd
+    build_into_bin "$SRC_DIR/wsprmon"   wsprmon
+    build_into_bin "$SRC_DIR/sdrfanout" sdrfanout
 }
 
 
@@ -124,7 +132,7 @@ install_config() {
         monitor)   cfg_dir="$HOME/.watchersattherim" ;;
         collector) cfg_dir="$HOME/.watchersattherim/collector" ;;
     esac
-    CONFIG_PATH="$cfg_dir/$ROLE.full.ini"
+    CONFIG_PATH="$cfg_dir/$ROLE.ini"
     install -d "$cfg_dir"
     if [ -e "$CONFIG_PATH" ]; then
         say "config already exists, leaving it: $CONFIG_PATH"
@@ -137,6 +145,7 @@ install_config() {
             -e "s|^# path = ft8mon.*|path = $BIN_DIR/ft8mon|" \
             -e "s|^# path = wsprmon.*|path = $BIN_DIR/wsprmon|" \
             -e "s|^# wsprd_path = wsprd.*|wsprd_path = $BIN_DIR/wsprd|" \
+            -e "s|^# *path *= *sdrfanout.*|path = $BIN_DIR/sdrfanout|" \
             "$CONFIG_PATH"
     fi
     say "config written: $CONFIG_PATH"
@@ -214,7 +223,7 @@ if [ "$WANT_CONFIG" = 1 ]; then
     if [ "$WANT_SERVICE" = 1 ]; then
         echo "  config:    $CONFIG_PATH    (edit it, then: sudo systemctl restart watchersattherim-$ROLE)"
     else
-        echo "  config:    $CONFIG_PATH    (edit it, then: watr-$ROLE -c $CONFIG_PATH)"
+        echo "  config:    $CONFIG_PATH    (edit it, then: watr-$ROLE)"
     fi
 else
     echo "  config:    copy examples/${ROLE}.full.example.ini and edit it"

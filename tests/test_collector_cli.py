@@ -70,3 +70,16 @@ def test_block_and_unblock_query(tmp_path):
     assert storage.is_query_blocked(db(tmp_path), bytes.fromhex(MON)) is True
     assert main(["-c", cfg, "--unblock", MON]) == 0
     assert storage.is_query_blocked(db(tmp_path), bytes.fromhex(MON)) is False
+
+
+def test_finds_collector_ini_in_cwd(tmp_path, monkeypatch):
+    # no -c: ./collector.ini is found and used
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "collector.ini").write_text(f"[storage]\ndir = {tmp_path}\n")
+    assert main(["--list-monitors"]) == 0
+
+
+def test_no_config_anywhere_errors(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)                  # no ./collector.ini
+    monkeypatch.setenv("HOME", str(tmp_path))    # no ~/.watchersattherim/collector/...
+    assert main(["--list-monitors"]) == 2

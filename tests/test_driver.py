@@ -14,10 +14,11 @@ SAMPLE = Path(__file__).resolve().parent.parent / "docs/samples/ft8mon_output.tx
 
 
 class FakePopen:
-    """Minimal Popen stand-in: stdout yields the given lines, then 'exits'."""
+    """Minimal Popen stand-in: stdout/stderr yield the given lines, then 'exits'."""
 
-    def __init__(self, lines, returncode=0):
+    def __init__(self, lines, returncode=0, stderr_lines=None):
         self.stdout = iter(line + "\n" for line in lines)
+        self.stderr = iter(line + "\n" for line in (stderr_lines or []))
         self.returncode = returncode
         self.terminated = False
         self._done = False
@@ -27,7 +28,7 @@ class FakePopen:
         return self.returncode
 
     def poll(self):
-        # None while "running", returncode once reaped - like real Popen.
+        # None while "running", returncode once reaped, like real Popen.
         return self.returncode if self._done else None
 
     def terminate(self):
@@ -102,6 +103,38 @@ def test_stop_terminates_child():
     drv = ReceiverDriver(["fake"], on_line=on_line, popen=lambda argv: proc)
     drv.run()
     assert proc.terminated is True
+
+
+# --- capture_stderr (sdrfanout producer) ----------------------------------
+
+def test_started_log_abbreviated_unless_log_command():
+    short, full = [], []
+    ReceiverDriver(["ft8mon", "-card", "stream", "/x"], max_restarts=0,
+                   label="ft8mon [40m]", logger=short.append,
+                   popen=lambda a: FakePopen([])).run()
+    ReceiverDriver(["ft8mon", "-card", "stream", "/x"], max_restarts=0,
+                   label="ft8mon [40m]", logger=full.append, log_command=True,
+                   popen=lambda a: FakePopen([])).run()
+    assert "started ft8mon [40m]" in short          # no command string
+    assert not any("-card" in m for m in short)
+    assert any("started ft8mon [40m]: ft8mon -card stream /x" == m for m in full)
+
+
+def test_capture_stderr_routes_to_logger():
+    # sdrfanout's signal is on stderr, so capture_stderr sends it to the logger,
+    # never to on_line (there is no decode stdout to parse).
+    logs = []
+    seen = []
+    drv = ReceiverDriver(
+        ["fake"], on_line=seen.append, capture_stderr=True, max_restarts=0,
+        label="sdrfanout", logger=logs.append,
+        popen=lambda argv: FakePopen([], stderr_lines=["warning: -ppm ignored", "ch 7074000 -> /x"]),
+    )
+    drv.run()
+    assert seen == []                                            # nothing parsed
+    # passed through verbatim, no label prefix added (the child self-identifies)
+    assert "warning: -ppm ignored" in logs
+    assert "ch 7074000 -> /x" in logs
 
 
 # --- end-to-end replay ----------------------------------------------------

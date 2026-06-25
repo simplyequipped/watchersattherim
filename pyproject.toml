@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "watchersattherim"
-version = "0.3.1"
-description = "FT8 propagation path monitor"
+version = "0.4.0"
+description = "HF propagation path monitor"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

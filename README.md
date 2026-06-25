@@ -10,16 +10,18 @@ This project is beta status. More real world testing required.
 
 ### How it works
 
-A monitor runs one decoder process per configured receiver - [ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) for FT8 or [wsprmon](https://github.com/simplyequipped/wsprmon) (a streaming wrapper around WSJT-X's `wsprd`) for WSPR - reads its decodes, and turns them into propagation observations based on grid square locations and SNR signal reports. WSPR observations also carry the transmitter's reported power:
+A monitor runs one decoder process per configured receiver, [ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) for FT8 or [wsprmon](https://github.com/simplyequipped/wsprmon) (a streaming wrapper around WSJT-X's `wsprd`) for WSPR, reads its decodes, and turns them into propagation observations based on grid square locations and SNR signal reports. WSPR observations also carry the transmitter's reported power:
 
 ```
 ft8mon / wsprmon > parse decodes > observations > batch > LXMF > collector
 ```
 
+Multiple receivers can share one SDR: [sdrfanout](https://github.com/simplyequipped/sdrfanout) owns the radio, fans it out to a stream per receiver, and each decoder reads its own stream, so a single SDR can run FT8 and WSPR at once. Configure the radio in the `[sdr]` section of the config file and set `sdr = true` on each receiver that is part of the SDR fan-out.
+
 Each observation is a single `(tx_location, rx_location, snr, freq, time)` dataset. Two kinds of observations are produced:
 
-- **direct** - a path between a remote transmitting station and the monitoring station
-- **indirect** - a path between two remote stations
+- **direct**, a path between a remote transmitting station and the monitoring station
+- **indirect**, a path between two remote stations
 
 Observations are batched on an interval and sent to the collector in an LXMF message.
 
@@ -27,14 +29,14 @@ Observations are batched on an interval and sent to the collector in an LXMF mes
 
 - Linux OS (Ubuntu, Fedora, Raspberry Pi OS)
 - Python 3.10+
-- `ft8mon`/`wsprmon`/`wsprd` (compiled)
-- HF audio source: audio device (transceiver) or a `ft8mon`/`wsprmon` supported SDR
+- `ft8mon`/`wsprmon`/`wsprd`/`sdrfanout` (compiled)
+- HF audio source: an audio device (transceiver), a `ft8mon`/`wsprmon` supported SDR, or any SoapySDR device shared via `sdrfanout`
 - A configured Reticulum (RNS) network with a path to the collector
 
 ### Installation
 
 The install script installs system dependencies, clones and builds the
-decoders (ft8mon, wsprd, wsprmon), and installs `watchersattherim` into a virtualenv:
+receivers (ft8mon, wsprd, wsprmon, sdrfanout), and installs `watchersattherim` into a virtualenv:
 
 ```bash
 git clone https://github.com/simplyequipped/watchersattherim.git
@@ -57,20 +59,20 @@ cd watchersattherim
 
 #### Manual installation
 
-1. Install ft8mon build dependencies (fftw, libsndfile, portaudio)
+1. Install build dependencies (fftw, libsndfile, portaudio, soapysdr)
 
     Debian, Ubuntu, and Raspberry Pi OS:
     ```
     sudo apt update
-    sudo apt install -y build-essential git libfftw3-dev libsndfile1-dev portaudio19-dev
+    sudo apt install -y build-essential git libfftw3-dev libsndfile1-dev portaudio19-dev libsoapysdr-dev
     ```
 
     Fedora:
     ```
-    sudo dnf install -y gcc-c++ make git fftw-devel libsndfile-devel portaudio-devel
+    sudo dnf install -y gcc-c++ make git fftw-devel libsndfile-devel portaudio-devel SoapySDR-devel
     ```
 
-    **NOTE:** the base build supports sound card input. SDR backends require additional libraries and makefile edits (see the ft8mon README).
+    **NOTE:** `ft8mon` and `wsprmon` base builds support sound card input. Their own SDR backends require additional libraries and makefile edits (see their respective READMEs). `sdrfanout` uses SoapySDR instead, which works with any SoapySDR device. Installing `libsoapysdr-dev` typically pulls the full device-module bundle (rtlsdr/hackrf/airspy/... ~30-40 MB) via recommended packages, so any supported SDR works out of the box. To install only what you need, add `--no-install-recommends` and the specific `soapysdr<ver>-module-<device>` packages.
 
 2. Build ft8mon
 
@@ -102,7 +104,17 @@ cd watchersattherim
 
     Note the path to the compiled `wsprmon` binary, or add it to PATH.
 
-5. Install WatchersAtTheRim monitor
+5. Build sdrfanout (only needed to share an SDR across receivers)
+
+    ```
+    git clone https://github.com/simplyequipped/sdrfanout.git
+    cd sdrfanout
+    make
+    ```
+
+    Note the path to the compiled `sdrfanout` binary, or add it to PATH.
+
+6. Install WatchersAtTheRim package
 
     ```
     git clone https://github.com/simplyequipped/watchersattherim.git
@@ -110,9 +122,9 @@ cd watchersattherim
     pip install .
     ```
 
-6. Configure Reticulum
+7. Configure Reticulum
 
-    LXMF delivery requires a working Reticulum network. If you have not used Reticulum before, create a config and add at least one interface that can reach the collector. See the [Reticulum manual](https://markqvist.github.io/Reticulum/manual/). By default the monitor uses the standard `~/.reticulum` configuration.
+    LXMF delivery requires a working Reticulum network. If you have not used Reticulum before, create a config and add at least one interface that can reach the collector. See the [Reticulum manual](https://markqvist.github.io/Reticulum/manual/). By default the monitor uses the standard `~/.reticulum/config` configuration.
 
 
 ### Configuration
@@ -138,12 +150,12 @@ path = /home/pi/ft8mon/ft8mon
 
 [wsprmon]
 path = /home/pi/wsprmon/wsprmon
-wsprd_path = /home/pi/wsprd/wsprd   # optional; wsprmon finds wsprd on PATH if unset
+wsprd_path = /home/pi/wsprd/wsprd   # optional, wsprmon finds wsprd on PATH if unset
 ```
 
-**Receivers.** Each `[receiver:NAME]` section is one decoder process. `NAME` is a unique id; `band` defaults to it (ex. `20m`). `mode` is `ft8` (default) or `wspr`, and `enabled = false` keeps a section configured but not running. Give **one** of `card`, `path`, or `input`. `freq` is the RF dial frequency in Hz: an SDR is tuned to it, and for an audio device (radio tuned externally) it is recorded as metadata.
+**Receivers.** Each `[receiver:NAME]` section is one decoder process. `NAME` is a unique id; `band` defaults to it (ex. `20m`). `mode` is `ft8` (default) or `wspr`, and `enabled = false` keeps a section configured but not running. Give **one** of `card`, `path`, `input`, or `sdr`. `freq` is the RF dial frequency in Hz: an SDR is tuned to it, and for an audio device (radio tuned externally) it is recorded as metadata.
 
-| Input | Config Keys | `ft8mon` Command |
+| Input | Config Keys | `ft8mon`/`wsprmon` Command |
 | :--- | :--- | :--- |
 | Audio device | `card = 8` (or `8:0` to specify channel 0) | `-card 8 0` |
 | Airspy HF+ | `input = airspy`, optional `serial` | `-card airspy <serial>,<mhz>` |
@@ -151,8 +163,39 @@ wsprd_path = /home/pi/wsprd/wsprd   # optional; wsprmon finds wsprd on PATH if u
 | RFspace CloudSDR | `input = cloudsdr`, `ip` | `-card cloudsdr <ip>,<mhz>` |
 | Apache / HPSDR | `input = hpsdr`, `ip` | `-card hpsdr <ip>,<mhz>` |
 | WAV file | `path = file.wav` | `-card file <path>` |
+| Shared SDR (sdrfanout) | `sdr = true` (radio configured in `[sdr]`) | `-card stream <fifo>` |
 
-For `mode = wspr`, `wsprmon` uses the same input selector and takes the dial frequency via `-f`. An optional `args` value is appended to the decoder command.
+An `input` SDR is opened directly by its one decoder, so it cannot be shared. To run more than one receiver off a single SDR, use `sdr = true` instead (see **Shared SDR** below).
+
+An optional `args` value is appended to the decoder command.
+
+Two optional per-receiver settings:
+
+| Key | Default | Effect |
+| :--- | :--- | :--- |
+| `min_decode_snr` | `-25` (ft8), `-30` (wspr) | Drop decodes below this SNR before they become observations |
+| `restart_after_silent` | off | Restart this receiver if it produces no decodes for this long (a duration, ex. `5m`) |
+
+**Shared SDR.** An `[sdr]` section configures one physical SDR (via SoapySDR). Every receiver with `sdr = true` is a channel of it. The monitor launches `sdrfanout`, which tunes the radio once, digitally downconverts each receiver's `freq` to its own stream, and feeds each decoder. Device settings live in `[sdr]` (they apply to the whole radio) and only `freq` is per receiver.
+
+```ini
+[sdr]
+driver = hackrf          # SoapySDR device name
+
+[receiver:40m-ft8]
+mode = ft8
+band = 40m
+sdr  = true
+freq = 7074000
+
+[receiver:40m-wspr]
+mode = wspr
+band = 40m
+sdr  = true
+freq = 7038600
+```
+
+By default `rate`, `center`, and `gain` are auto. When `rate = auto`, `sdrfanout` picks the lowest sample rate that spans every channel. Set `[sdr] path` if `sdrfanout` is not on `PATH`.
 
 ### Usage
 
@@ -161,9 +204,16 @@ USAGE: watr [OPTIONS]          # watr-monitor is an equivalent alias
 
 OPTIONS:
 -c, --config PATH
-    Path to the INI config file (default: monitor.ini)
+    Path to the INI config file. If omitted, looks for ./monitor.ini, then
+    ~/.watchersattherim/monitor.ini (collector: ./collector.ini, then
+    ~/.watchersattherim/collector/collector.ini), and errors if neither exists.
 -i, --identity
     Print this node's LXMF address (creating the identity if needed) and exit
+-v, --verbose
+    Echo decodes to stdout, each prefixed with its mode (FT8 / WSPR) so interleaved
+    receivers are easy to tell apart. By default only decodes kept as observations
+    are shown (mirrors what reaches the collector). Set [monitor] debug = true for
+    the raw decode firehose (weak/below-SNR decodes, unrendered message types, etc.).
 --dry-run
     Print telemetry batches as JSON instead of sending them via LXMF
 ```
@@ -174,7 +224,7 @@ Verify decoding and parsing before you have a collector with a dry run:
 watr -c monitor.ini --dry-run
 ```
 
-In `--dry-run` the send interval is forced to 1 second so batches stream to stdout as they are produced (the config's `send_interval` is ignored).
+In `--dry-run` the send interval is forced to 15 seconds so batches stream to stdout as they are produced (the config's `send_interval` is ignored).
 
 Run live, reporting to the specified collector over LXMF:
 
@@ -216,7 +266,7 @@ The collector ingests over LXMF only. To also expose the read-only HTTP query AP
 
 ### Administration
 
-Manage a running collector from its host with `watr-collector` (each command acts and exits):
+Manage a running collector from its host with `watr-collector`:
 
 | Command | Effect |
 | :--- | :--- |
@@ -275,36 +325,36 @@ These are the raw observation queries (recent spots plus a summary):
 On top of these, the **propagation queries** turn observations into intelligence -
 `channel` (best band to a target now), `trend/*` (patterns over time + anomaly detection),
 `map` (activity over an area), and `coverage` (reachability over an area). They share this
-same `watr-query`/HTTP/LXMF surface and envelope; see
+same `watr-query`/HTTP/LXMF surface and envelope. See
 [docs/PROPAGATION.md](docs/PROPAGATION.md) for the full specification.
 
 ### Interpreting Query Results
 
 The network only ever sees what has been **decoded**, so every result is authoritative about
-*what was decodable* - not about absolute channel availability or what your particular
+*what was decodable*, not about absolute channel availability or what your particular
 station can work. Read the metrics with that scope in mind:
 
 - **Authoritative (direct measurements):** `distance` and `bearing` (geometry),
   `median_snr_db` / `quality` (decode strength; `quality` is just SNR rescaled to 0-1), and
-  `confidence` (how much fresh data backs the number - a *trust* signal, not a
+  `confidence` (how much fresh data backs the number, a *trust* signal, not a
   channel-goodness signal). For WSPR, `ref_snr_db` is *more* authoritative still: because
   WSPR carries the transmit power, it normalizes power out (`channel`/`coverage` report it
   per mode, alongside FT8), giving a path metric the ERP confound below does not touch.
 - **Activity-related (the crowd + coverage, not pure channel):** `observations`, `grids`,
-  and `openness` (a decode-rate; reliable where activity is dense, but a quiet path with no
+  and `openness` (a decode-rate, reliable where activity is dense, but a quiet path with no
   decodes is not the same as a closed band). Use these for "how busy/widespread," not "how
   good."
-- **Most robust:** `deviation` (anomaly) - a *relative* metric, so the shared activity and
+- **Most robust:** `deviation` (anomaly), a *relative* metric, so the shared activity and
   coverage biases cancel out. It is the honest answer to "is something unusual right now."
 
 Two reading tips: on a **fixed path** (`channel`, `trend/path`), watch SNR/`quality` -
-conditions move it. Across a **whole band** (`trend/band`), watch `distance` - the network
+conditions move it. Across a **whole band** (`trend/band`), watch `distance`, the network
 self-selects decodable signals, so SNR clusters and *reach* carries the diurnal swing.
 
 Caveats that apply throughout: the data is receive-only, so `channel`/`coverage` infer your
-outbound link from observed inbound paths (**reciprocity**); FT8 SNR includes the other station's
+outbound link from observed inbound paths (**reciprocity**). FT8 SNR includes the other station's
 power and antenna (**ERP**), which a median smooths but does not remove (WSPR's `ref_snr_db` does,
-by normalizing to a reference power); and a spatial result
+by normalizing to a reference power). A spatial result
 with no data for an area means a **blind spot**, not a closed band. Converting any of this to
 "can *my* station reach X" is a link-budget step that needs your power/antenna and is an
 estimate, not an authoritative output.
@@ -314,7 +364,7 @@ What it is authoritative per endpoint:
 | Endpoint | Authoritative | Not |
 | :--- | :--- | :--- |
 | `path`/`from`/`to`/`band` | the actual records decoded, and stats over them | anything beyond what was decoded |
-| `channel` | a robust, network-derived SNR for a path now | whether *you* can work it; absolute reach |
+| `channel` | a robust, network-derived SNR for a path now | whether *you* can work it, absolute reach |
 | `channel/anomaly` | whether now differs from the recent normal for this hour | the cause of the difference |
 | `trend/path/*` | a path's strength/decode-rate shape over time | absolute availability on quiet paths |
 | `trend/band/*` | a band's activity, spread, and reach over time | channel quality from `observations` alone |
@@ -453,8 +503,9 @@ pytest
 
 ### Acknowledgements
 
-[ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) by Robert Morris, AB1HL<br>
-[wsprd](https://wsjt.sourceforge.io/) WSPR decoder from WSJT-X via [https://github.com/pavel-demin/wsprd](https://github.com/pavel-demin/wsprd)<br>
-[Reticulum](https://github.com/markqvist/Reticulum) and [LXMF](https://github.com/markqvist/LXMF) by Mark Qvist<br>
-FT8 protocol by Steven Franke, Bill Somerville, and Joe Taylor (WSJT-X)<br>
+- [ft8mon](https://github.com/rtmrtmrtmrtm/ft8mon) by Robert Morris
+- [wsprd](https://wsjt.sourceforge.io/) WSPR decoder from WSJT-X via [https://github.com/pavel-demin/wsprd](https://github.com/pavel-demin/wsprd)
+- [Reticulum](https://github.com/markqvist/Reticulum) and [LXMF](https://github.com/markqvist/LXMF) by Mark Qvist
+- FT8 protocol by Steven Franke, Bill Somerville, and Joe Taylor
+- Claude AI contributed to this project
 

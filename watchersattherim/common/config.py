@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 import configparser
+import os
 import re
 
 
 class ConfigError(Exception):
     pass
+
+
+def resolve_config(explicit, candidates: list[str]) -> str:
+    """Pick the config file path for a CLI.
+
+    With an explicit ``-c`` value, use it verbatim (a missing file is then reported
+    by the caller's ``load``). Otherwise return the first existing candidate (``~``
+    expanded), or raise ``ConfigError`` listing where it looked.
+    """
+    if explicit is not None:
+        return explicit
+    for c in candidates:
+        path = os.path.expanduser(c)
+        if os.path.exists(path):
+            return path
+    raise ConfigError(
+        "no config file found. Looked for " + ", ".join(candidates)
+        + ". Specify one with -c PATH"
+    )
 
 
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}

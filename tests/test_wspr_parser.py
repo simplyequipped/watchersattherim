@@ -13,18 +13,18 @@ from watchersattherim.monitor.wspr_parser import (
 # --- line parsing ---------------------------------------------------------
 
 def test_parse_decode_line():
-    d = parse_line("091800  -9  1.1  14.097046  0  ND6P FN19 30")
+    d = parse_line("091800  -9  1.1  1446.0  0  ND6P FN19 30")
     assert d is not None
     assert d.hhmmss == "091800"
     assert d.snr == -9
     assert d.dt == 1.1
-    assert d.freq_mhz == 14.097046
+    assert d.freq_hz == 1446.0
     assert d.drift == 0
     assert d.message == "ND6P FN19 30"
 
 
 def test_parse_negative_dt_and_drift():
-    d = parse_line("091800  -1 -0.8  14.097103 -1  NM7J FN20 30")
+    d = parse_line("091800  -1 -0.8  1503.0 -1  NM7J FN20 30")
     assert d is not None and d.dt == -0.8 and d.snr == -1 and d.drift == -1
 
 
@@ -41,7 +41,7 @@ def test_non_decode_lines_skipped(line):
 
 def test_parse_stream_filters():
     lines = [
-        "091800  -9  1.1  14.097046  0  ND6P FN19 30",
+        "091800  -9  1.1  1446.0  0  ND6P FN19 30",
         "09:18:00 decodes: 1",
         "garbage",
     ]

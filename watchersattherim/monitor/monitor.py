@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from .. import __version__
 from .cache import CallsignCache
-from .config import Config, Receiver
+from .config import Config, Receiver, sdrfanout_argv
 from .driver import ReceiverDriver
 from .ft8_pipeline import ingest as ft8_ingest
 from .wspr_pipeline import ingest as wspr_ingest
@@ -80,10 +80,11 @@ class Monitor:
         self._stop = threading.Event()
         self._window_start = int(self._clock())
 
-        # No-decode watchdog: restart a ft8mon that is alive but silent.
-        self._silent_limit = config.restart_after_silent_cycles
+        # No-decode watchdog: restart a receiver that is alive but silent. Each
+        # receiver has its own threshold (seconds, 0 = disabled), checked per flush.
+        self._silent_limit = {r.name: r.restart_after_silent_sec for r in config.receivers}
         self._window_decodes: dict[str, int] = {}
-        self._silent_cycles: dict[str, int] = {}
+        self._silent_sec: dict[str, int] = {}
 
     # --- per-decode -------------------------------------------------------
 
@@ -91,24 +92,32 @@ class Monitor:
         now = self._clock()
         with self._lock:
             if receiver.mode == "wspr":
-                result = wspr_ingest(line, self.config.monitor.grid)
+                result = wspr_ingest(line, receiver.freq, self.config.monitor.grid,
+                                     min_snr=receiver.min_decode_snr)
             else:
                 result = ft8_ingest(line, receiver.freq, self.config.monitor.grid,
-                                    self._obs_cache, ts=now)
+                                    self._obs_cache, ts=now,
+                                    min_snr=receiver.min_decode_snr)
             if result is None:
                 return                       # not a decode line
-            if self.verbose:
-                print(line, flush=True)
             self.batcher.note_decode()
-            if self._silent_limit > 0:
-                self._window_decodes[receiver.name] = (
-                    self._window_decodes.get(receiver.name, 0) + 1
-                )
+            # count the decode for the watchdog (a weak-but-filtered decode still
+            # means the receiver is alive)
+            self._window_decodes[receiver.name] = (
+                self._window_decodes.get(receiver.name, 0) + 1
+            )
+            added = 0
             for obs, freq_hz in result:
                 if obs.kind == "indirect" and not self.config.observations.indirect:
                     continue
                 self.batcher.add(obs, ts=_slot(now), freq_hz=freq_hz,
                                  band=receiver.band, mode=receiver.mode.upper())
+                added += 1
+            # -v mirrors the collector by default (only decodes kept as observations).
+            # debug echoes the full raw decode firehose. A mode column tells the
+            # interleaved FT8/WSPR lines apart.
+            if self.verbose and (self.config.monitor.debug or added > 0):
+                print(f"{receiver.mode.upper():4} {line}", flush=True)
 
     # --- window flush -----------------------------------------------------
 
@@ -125,26 +134,65 @@ class Monitor:
         return ok
 
     def _check_watchdog(self) -> None:
-        """Restart any receiver that produced no decodes for too many windows."""
-        if self._silent_limit <= 0:
-            return
+        """Restart any receiver silent past its own restart_after_silent threshold.
+
+        Runs once per flush, so each silent window adds ``send_interval`` seconds to
+        a receiver's silence. A decode resets it.
+        """
+        interval = self.config.collector.send_interval
         with self._lock:
             decodes = dict(self._window_decodes)
             self._window_decodes.clear()
         for name, driver in self._driver_by_name.items():
+            limit = self._silent_limit.get(name, 0)
+            if limit <= 0:
+                continue                     # watchdog disabled for this receiver
             if decodes.get(name, 0) > 0:
-                self._silent_cycles[name] = 0
+                self._silent_sec[name] = 0
                 continue
-            n = self._silent_cycles.get(name, 0) + 1
-            self._silent_cycles[name] = n
-            if n >= self._silent_limit:
-                self._log(f"no decodes from receiver [{name}] in {n} window(s)")
+            elapsed = self._silent_sec.get(name, 0) + interval
+            self._silent_sec[name] = elapsed
+            if elapsed >= limit:
+                self._log(f"no decodes from receiver [{name}] in {elapsed}s")
                 driver.bounce()
-                self._silent_cycles[name] = 0
+                self._silent_sec[name] = 0
 
     # --- lifecycle --------------------------------------------------------
 
+    def _sdrfanout_driver(self) -> Optional[ReceiverDriver]:
+        """Build (not start) the sdrfanout producer for the shared-SDR receivers.
+
+        One sdrfanout process owns the radio and fans it out to a FIFO per
+        ``sdr = yes`` receiver. We create the FIFOs here so a decoder's open()
+        finds them (and blocks for the writer) regardless of start order. Returns
+        None when no receiver feeds off the shared SDR.
+        """
+        streams = [r for r in self.config.receivers if r.kind == "sdr"]
+        if not streams or self.config.sdr is None:
+            return None
+        sdr = self.config.sdr
+        os.makedirs(sdr.runtime_dir, exist_ok=True)
+        for r in streams:
+            try:
+                os.mkfifo(r.path)
+            except FileExistsError:
+                pass
+        return ReceiverDriver(
+            sdrfanout_argv(sdr, streams),
+            capture_stderr=True, label="sdrfanout", logger=self._log,
+            log_command=self.config.monitor.debug,
+        )
+
     def run(self) -> None:
+        # Start the shared SDR first (if any), so its FIFOs exist and it is writing
+        # before the decoders open them. Decoders are decoupled from its restarts:
+        # StreamSoundIn resyncs on the wsf magic after a gap, and a long outage trips
+        # the silent-decode watchdog.
+        producer = self._sdrfanout_driver()
+        if producer is not None:
+            self._drivers.append(producer)
+            threading.Thread(target=producer.run, name="sdrfanout", daemon=True).start()
+
         for receiver in self.config.receivers:
             if receiver.mode == "wspr":
                 workdir = os.path.join(
@@ -161,6 +209,7 @@ class Monitor:
                 on_line=lambda line, r=receiver: self.handle_line(r, line),
                 label=f"{os.path.basename(argv[0])} [{receiver.name}]",
                 logger=self._log,
+                log_command=self.config.monitor.debug,
             )
             self._drivers.append(driver)
             self._driver_by_name[receiver.name] = driver

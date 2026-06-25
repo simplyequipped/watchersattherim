@@ -1,5 +1,25 @@
 ## Changelog
 
+### Version 0.4.0
+
+- added `sdrfanout` support for sharing one SDR across multiple receivers (ex. FT8 + WSPR)
+- added `[sdr]` section to monitor config
+- added per-receiver `sdr = true` to indicate a channel off the shared SDR configured in `[sdr]`
+- added per-receiver `min_decode_snr` (default -25 ft8 / -30 wspr)
+- added `[monitor] debug` (default false)
+- added a mode column (FT8 / WSPR) to `-v` output
+- added `sdrfanout` build and the SoapySDR dependency to `install.sh`
+- changed single `restart_after_silent_cycles` to per-receiver `restart_after_silent` (duration like `5m`, default off)
+- changed `-v` to only output decodes kept as observations (use `[monitor] debug=true` to see all decodes)
+- changed startup messages to not show subprocess command (use `[monitor] debug=true` to see subprocess commands)
+- changed default monitor config lookup: `./monitor.ini` then `~/.watchersattherim/monitor.ini`
+- changed default collector config lookup: `./collector.ini` then `~/.watchersattherim/collector/collector.ini`
+- changed `install.sh --config` to write config at the default path/filename to allow auto-discovery without specifying config
+- changed config `[collector] send_interval` default from 60 to 120 seconds
+- fixed telemetry `sw_version` which was hardcoded to 0.1.0
+- updated example monitor config
+- updated README.md
+
 ### Version 0.3.1
 
 - fixed `wsprmon` receivers aborting under a systemd service due to missing wav file write permissions in default service working directory
