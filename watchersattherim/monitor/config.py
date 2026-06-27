@@ -15,7 +15,7 @@ from __future__ import annotations
 import configparser
 import os
 import re
-import shlex
+import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,13 +43,13 @@ class Receiver:
     # NB: kind "sdr" comes from the config key `sdr`, NOT from `input` (that's "backend").
     kind: str
     mode: str = "ft8"               # "ft8" | "wspr"
-    card: Optional[int] = None
+    card: Optional[int] = None      # audio device number, resolved from card_desc when needed
+    card_desc: Optional[str] = None # text to match against -list device names, until resolved
     channel: int = 0
     path: Optional[str] = None      # WAV path (file), or the FIFO path (sdr)
     input: Optional[str] = None
     serial: Optional[str] = None
     ip: Optional[str] = None
-    args: list = field(default_factory=list)
     min_decode_snr: int = -25            # drop this receiver's decodes below this SNR
     restart_after_silent_sec: int = 0    # 0 = no-decode watchdog disabled for this receiver
     snr_ceiling: tuple = ()              # ((distance_km, max_snr), ...) sorted; drop strong-at-distance
@@ -57,6 +57,11 @@ class Receiver:
     def _source_args(self) -> list[str]:
         """The ``-card …`` input selector shared by ft8mon and wsprmon."""
         if self.kind == "audio":
+            if self.card is None:
+                raise ConfigError(
+                    f"[receiver:{self.name}] card {self.card_desc!r} was not resolved "
+                    f"to a device number"
+                )
             return ["-card", str(self.card), str(self.channel)]
         if self.kind == "file":
             return ["-card", "file", self.path]
@@ -69,7 +74,7 @@ class Receiver:
 
     def ft8mon_args(self) -> list[str]:
         """Arguments this receiver launches ft8mon with."""
-        return [*self._source_args(), *self.args]
+        return self._source_args()
 
     def wsprmon_args(self, wsprd_path: Optional[str] = None,
                      workdir: Optional[str] = None) -> list[str]:
@@ -88,9 +93,9 @@ class Receiver:
             args += ["-a", workdir]
         args += ["-hz"]
         if self.kind == "file":
-            args += [*self.args, "-file", self.path]
+            args += ["-file", self.path]
         else:
-            args += [*self._source_args(), *self.args]
+            args += self._source_args()
         return args
 
 
@@ -101,15 +106,15 @@ class Sdr:
     """One physical SDR, fanned out to its ``sdr = yes`` receivers by sdrfanout.
 
     Device settings apply to the whole radio (all channels). Only a receiver's
-    dial (``freq``) and FIFO are per channel. ``runtime_dir`` is where the monitor
+    dial (``freq``) and FIFO are per channel. ``working_dir`` is where the monitor
     creates the channel FIFOs.
     """
-    runtime_dir: str                 # resolved and expanded, <storage.dir>/run by default
+    working_dir: str                 # resolved/expanded scratch dir, defaults to [monitor] working_dir
     driver: str = ""                 # device name, e.g. "hackrf". "" = first device
     gain: Optional[str] = None       # dB string, or None/"auto" = device default
     rate: Optional[int] = None       # Hz. None = auto (smallest int x12k spanning channels)
-    center: Optional[int] = None     # Hz. None = auto (lowest dial minus guard)
-    guard: int = 10000               # Hz between LO and the lowest channel
+    center: "int | str | None" = None  # Hz, "edge", or None = auto (LO centered in the channels)
+    guard: int = 10000               # Hz a channel must clear the LO and each band edge
     ppm: float = 0.0                 # frequency correction (no-op on some devices)
     antenna: Optional[str] = None    # Soapy antenna name. None = device default
     buffer: float = 1.0              # per-channel output buffer (sec)
@@ -151,6 +156,7 @@ class Monitor:
     lat: float
     lon: float
     debug: bool = False   # -v echoes every raw decode (else only ones kept as observations)
+    working_dir: str = "" # scratch base for FIFOs and wsprmon wavs; a tmpfs by default
 
 
 @dataclass
@@ -227,6 +233,7 @@ class Config:
     ft8mon_path: str = "ft8mon"
     wsprmon_path: str = "wsprmon"
     wsprd_path: Optional[str] = None        # None: wsprmon self-resolves wsprd
+    wsprmon_working_dir: str = ""           # base dir for wsprmon's wav scratch
     sdr: Optional[Sdr] = None               # the shared SDR. None when no [sdr] section
     observations: Observations = field(default_factory=Observations)
     cache: Cache = field(default_factory=Cache)
@@ -251,12 +258,12 @@ def loads(text: str) -> Config:
 
 
 def from_parser(cp: configparser.ConfigParser) -> Config:
-    monitor = _monitor(cp)
-    # storage + [sdr] first: a `sdr = yes` receiver's FIFO lives under the SDR's
-    # runtime_dir, which defaults under storage.dir, so both must be known to
-    # resolve the receiver's path.
+    # storage first: the working dirs fall back under it. monitor.working_dir is the
+    # scratch base the [sdr] FIFO dir and the wsprmon wav dir default to, so both the
+    # SDR (FIFO paths) and the wsprmon receivers resolve against it.
     storage = Storage(dir=cp.get("storage", "dir", fallback="~/.watchersattherim"))
-    sdr = _sdr(cp, storage)
+    monitor = _monitor(cp, storage)
+    sdr = _sdr(cp, monitor.working_dir)
     receivers = _receivers(cp, sdr)
     collector = _collector(cp)
 
@@ -273,6 +280,7 @@ def from_parser(cp: configparser.ConfigParser) -> Config:
     reticulum = Reticulum(config_dir=cp.get("reticulum", "config_dir", fallback=None))
 
     wsprd_path = cp.get("wsprmon", "wsprd_path", fallback=None)
+    wsprmon_wd = cp.get("wsprmon", "working_dir", fallback=None)
     return Config(
         blacklist=_blacklist(cp),
         monitor=monitor,
@@ -282,6 +290,7 @@ def from_parser(cp: configparser.ConfigParser) -> Config:
         ft8mon_path=os.path.expanduser(cp.get("ft8mon", "path", fallback="ft8mon")),
         wsprmon_path=os.path.expanduser(cp.get("wsprmon", "path", fallback="wsprmon")),
         wsprd_path=os.path.expanduser(wsprd_path) if wsprd_path else None,
+        wsprmon_working_dir=os.path.expanduser(wsprmon_wd) if wsprmon_wd else monitor.working_dir,
         observations=obs,
         cache=cache,
         storage=storage,
@@ -289,7 +298,21 @@ def from_parser(cp: configparser.ConfigParser) -> Config:
     )
 
 
-def _monitor(cp: configparser.ConfigParser) -> Monitor:
+def _default_working_dir(storage: Storage) -> str:
+    """The default scratch base for ``[monitor] working_dir``.
+
+    A tmpfs under ``/dev/shm`` so transient files (the channel FIFOs and wsprmon's
+    per-slot wav) stay in RAM and never wear an SD card. Falls back to
+    ``<storage.dir>`` where /dev/shm is absent or not writable (containers, minimal
+    installs).
+    """
+    shm = "/dev/shm"
+    if os.path.isdir(shm) and os.access(shm, os.W_OK):
+        return os.path.join(shm, "watchersattherim")
+    return os.path.expanduser(storage.dir)
+
+
+def _monitor(cp: configparser.ConfigParser, storage: Storage) -> Monitor:
     grid = cp.get("monitor", "grid", fallback=None)
     if not grid:
         raise ConfigError("[monitor] grid is required")
@@ -303,7 +326,9 @@ def _monitor(cp: configparser.ConfigParser) -> Monitor:
         lat = glat if lat is None else lat
         lon = glon if lon is None else lon
     debug = cp.getboolean("monitor", "debug", fallback=False)
-    return Monitor(grid=grid, lat=lat, lon=lon, debug=debug)
+    wd = cp.get("monitor", "working_dir", fallback=None)
+    working_dir = os.path.expanduser(wd) if wd else _default_working_dir(storage)
+    return Monitor(grid=grid, lat=lat, lon=lon, debug=debug, working_dir=working_dir)
 
 
 def _blacklist(cp: configparser.ConfigParser) -> Blacklist:
@@ -390,13 +415,12 @@ def _receiver(cp, section: str, name: str, sdr: Optional[Sdr]) -> Receiver:
     card = cp.get(section, "card", fallback=None)
     path = cp.get(section, "path", fallback=None)
     inp = cp.get(section, "input", fallback=None)
-    args = shlex.split(cp.get(section, "args", fallback=""))
 
     # drop weak decodes: default just below each mode's floor (FT8 ~-24, WSPR ~-28)
     min_snr = cp.getint(section, "min_decode_snr",
                         fallback=-25 if mode == "ft8" else -30)
     ras = cp.get(section, "restart_after_silent", fallback=None)
-    common = dict(mode=mode, args=args, min_decode_snr=min_snr,
+    common = dict(mode=mode, min_decode_snr=min_snr,
                   restart_after_silent_sec=parse_duration(ras) if ras else 0,
                   snr_ceiling=_parse_snr_ceiling(cp, section))
 
@@ -418,16 +442,16 @@ def _receiver(cp, section: str, name: str, sdr: Optional[Sdr]) -> Receiver:
         )
 
     if card is not None:
-        device, channel = _parse_card(section, card)
+        device, desc, channel = _parse_card(section, card)
         return Receiver(name, band, freq, "audio",
-                        card=device, channel=channel, **common)
+                        card=device, card_desc=desc, channel=channel, **common)
     if path is not None:
         return Receiver(name, band, freq, "file",
                         path=os.path.expanduser(path), **common)
     if use_sdr:
         if sdr is None:
             raise ConfigError(f"[{section}] sdr = yes requires an [sdr] section")
-        fifo = os.path.join(sdr.runtime_dir, f"{name}.fifo")
+        fifo = os.path.join(sdr.working_dir, "sdrfanout", f"{name}.fifo")
         return Receiver(name, band, freq, "sdr", path=fifo, **common)
 
     inp = inp.lower()
@@ -441,17 +465,39 @@ def _receiver(cp, section: str, name: str, sdr: Optional[Sdr]) -> Receiver:
                     input=inp, serial=serial, ip=ip, **common)
 
 
-def _sdr(cp: configparser.ConfigParser, storage: Storage) -> Optional[Sdr]:
+def _sdr_center(cp: configparser.ConfigParser) -> "int | str | None":
+    """Parse ``[sdr] center``: a frequency in Hz, ``edge``, or ``auto``/unset.
+
+    ``edge`` selects sdrfanout's one-sided layout (LO just below all channels).
+    ``auto`` or unset leaves it to sdrfanout's default (LO centered in the channels).
+    """
+    raw = cp.get("sdr", "center", fallback=None)
+    if raw is None:
+        return None
+    v = raw.strip().lower()
+    if v in ("", "auto"):
+        return None
+    if v == "edge":
+        return "edge"
+    try:
+        return int(v)
+    except ValueError:
+        raise ConfigError(
+            f"[sdr] center must be a frequency in Hz, 'edge', or 'auto', got {raw!r}"
+        ) from None
+
+
+def _sdr(cp: configparser.ConfigParser, monitor_working_dir: str) -> Optional[Sdr]:
     if not cp.has_section("sdr"):
         return None
-    default_runtime = os.path.join(os.path.expanduser(storage.dir), "run")
-    runtime = cp.get("sdr", "runtime_dir", fallback=default_runtime)
+    wd = cp.get("sdr", "working_dir", fallback=None)
+    working_dir = os.path.expanduser(wd) if wd else monitor_working_dir
     return Sdr(
-        runtime_dir=os.path.expanduser(runtime),
+        working_dir=working_dir,
         driver=cp.get("sdr", "driver", fallback=""),
         gain=cp.get("sdr", "gain", fallback=None),
         rate=cp.getint("sdr", "rate", fallback=None),
-        center=cp.getint("sdr", "center", fallback=None),
+        center=_sdr_center(cp),
         guard=cp.getint("sdr", "guard", fallback=10000),
         ppm=cp.getfloat("sdr", "ppm", fallback=0.0),
         antenna=cp.get("sdr", "antenna", fallback=None),
@@ -460,14 +506,74 @@ def _sdr(cp: configparser.ConfigParser, storage: Storage) -> Optional[Sdr]:
     )
 
 
-def _parse_card(section: str, card: str) -> tuple[int, int]:
-    parts = re.split(r"[:\s]+", card.strip())
+def _parse_card(section: str, card: str) -> tuple[Optional[int], Optional[str], int]:
+    """Split a ``card`` value into ``(device, description, channel)``.
+
+    A trailing ``:CH`` (CH an integer) is the audio channel, default 0. What
+    remains is the device: an integer is its ``-list`` number, anything else is a
+    text description to match against the ``-list`` device names (resolved later by
+    running the decoder's ``-list``). Exactly one of device/description is set.
+    """
+    body = card.strip()
+    channel = 0
+    if ":" in body:
+        head, tail = body.rsplit(":", 1)
+        try:
+            channel = int(tail)
+            body = head.strip()
+        except ValueError:
+            pass   # not a channel suffix, so the colon is part of a description
+    if not body:
+        raise ConfigError(f"[{section}] invalid card {card!r} (want N, N:CH, or a description)")
     try:
-        device = int(parts[0])
-        channel = int(parts[1]) if len(parts) > 1 else 0
-    except ValueError as e:
-        raise ConfigError(f"[{section}] invalid card {card!r} (want N or N:CH)") from e
-    return device, channel
+        return int(body), None, channel
+    except ValueError:
+        return None, body, channel
+
+
+def parse_device_list(text: str) -> list[tuple[int, str]]:
+    """Parse ``ft8mon -list`` / ``wsprmon -list`` output into ``(device, name)`` pairs.
+
+    Each device line is ``N: NAME IN/OUT <rates...>`` (PortAudio's enumeration), so
+    NAME is the text between the device number and the ``IN/OUT`` channel counts.
+    """
+    devices: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        m = re.match(r"\s*(\d+):\s+(.+?)\s+\d+/\d+", line)
+        if m:
+            devices.append((int(m.group(1)), m.group(2).strip()))
+    return devices
+
+
+def resolve_card_desc(section: str, desc: str,
+                      devices: list[tuple[int, str]]) -> int:
+    """Match a card description to exactly one device number from a parsed ``-list``.
+
+    The match is a case-insensitive substring of the device name. No match or more
+    than one match is a config error.
+    """
+    matches = [(n, name) for n, name in devices if desc.lower() in name.lower()]
+    if not matches:
+        listed = ", ".join(f"{n} ({name})" for n, name in devices) or "none"
+        raise ConfigError(
+            f"[{section}] card {desc!r} matched no audio device (listed: {listed})"
+        )
+    if len(matches) > 1:
+        names = ", ".join(f"{n} ({name})" for n, name in matches)
+        raise ConfigError(
+            f"[{section}] card {desc!r} matched multiple audio devices: {names}"
+        )
+    return matches[0][0]
+
+
+def list_audio_devices(binary_path: str) -> list[tuple[int, str]]:
+    """Run ``<binary_path> -list`` and return its parsed ``(device, name)`` pairs."""
+    try:
+        proc = subprocess.run([binary_path, "-list"], capture_output=True,
+                              text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ConfigError(f"could not run {binary_path} -list: {e}") from e
+    return parse_device_list(proc.stdout)
 
 
 def _collector(cp: configparser.ConfigParser) -> Collector:

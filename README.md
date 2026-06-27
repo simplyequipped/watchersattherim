@@ -157,7 +157,7 @@ wsprd_path = /home/pi/wsprd/wsprd   # optional, wsprmon finds wsprd on PATH if u
 
 | Input | Config Keys | `ft8mon`/`wsprmon` Command |
 | :--- | :--- | :--- |
-| Audio device | `card = 8` (or `8:0` to specify channel 0) | `-card 8 0` |
+| Audio device | `card = 8` (or `8:0` to specify channel 0, or `card = QMX` to match the `-list` device description) | `-card 8 0` |
 | Airspy HF+ | `input = airspy`, optional `serial` | `-card airspy <serial>,<mhz>` |
 | RFspace SDR-IP / NetSDR / CloudIQ | `input = sdrip`, `ip` | `-card sdrip <ip>,<mhz>` |
 | RFspace CloudSDR | `input = cloudsdr`, `ip` | `-card cloudsdr <ip>,<mhz>` |
@@ -166,8 +166,6 @@ wsprd_path = /home/pi/wsprd/wsprd   # optional, wsprmon finds wsprd on PATH if u
 | Shared SDR (sdrfanout) | `sdr = true` (radio configured in `[sdr]`) | `-card stream <fifo>` |
 
 An `input` SDR is opened directly by its one decoder, so it cannot be shared. To run more than one receiver off a single SDR, use `sdr = true` instead (see **Shared SDR** below).
-
-An optional `args` value is appended to the decoder command.
 
 Two optional per-receiver settings:
 

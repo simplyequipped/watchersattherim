@@ -226,7 +226,7 @@ def test_sdrfanout_driver_creates_fifos_and_plan(tmp_path):
     ini = (
         "[monitor]\ngrid = FN19\n[collector]\naddress = abc\n"
         f"[storage]\ndir = {tmp_path}\n"
-        f"[sdr]\ndriver = hackrf\nruntime_dir = {runtime}\n"
+        f"[sdr]\ndriver = hackrf\nworking_dir = {runtime}\n"
         "[receiver:40m-ft8]\nfreq = 7074000\nsdr = yes\n"
         "[receiver:40m-wspr]\nmode = wspr\nfreq = 7038600\nsdr = yes\n"
     )
@@ -239,9 +239,9 @@ def test_sdrfanout_driver_creates_fifos_and_plan(tmp_path):
     assert drv is not None and drv.capture_stderr
     assert drv.argv[:3] == [cfg.sdr.path, "-driver", "hackrf"]
     assert "-ch" in drv.argv                       # channels present
-    # both FIFOs were created as real FIFOs
+    # both FIFOs were created as real FIFOs under the sdrfanout/ subdir
     for name in ("40m-ft8", "40m-wspr"):
-        f = runtime / f"{name}.fifo"
+        f = runtime / "sdrfanout" / f"{name}.fifo"
         assert f.exists() and stat.S_ISFIFO(os.stat(f).st_mode)
 
 

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from watchersattherim.monitor.config import (
-    Blacklist, ConfigError, load, loads, parse_duration, sdrfanout_argv,
+    Blacklist, ConfigError, load, loads, parse_device_list, parse_duration,
+    resolve_card_desc, sdrfanout_argv,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -81,6 +82,54 @@ def test_audio_receiver_explicit_channel():
     assert r.channel == 1 and r.ft8mon_args() == ["-card", "8", "1"]
 
 
+def test_card_description_unresolved_until_listed():
+    r = _one_receiver("[receiver:20m]\nfreq = 14074000\ncard = QMX")
+    assert r.kind == "audio" and r.card is None
+    assert r.card_desc == "QMX" and r.channel == 0
+    with pytest.raises(ConfigError):
+        r.ft8mon_args()
+
+
+def test_card_description_with_channel():
+    r = _one_receiver("[receiver:20m]\nfreq = 14074000\ncard = QMX:1")
+    assert r.card is None and r.card_desc == "QMX" and r.channel == 1
+
+
+def test_card_description_keeps_inner_colon():
+    r = _one_receiver("[receiver:20m]\nfreq = 14074000\ncard = USB:Audio")
+    assert r.card_desc == "USB:Audio" and r.channel == 0
+
+
+SND_LIST = """3 sound devices:
+0: HDA Intel PCH 0/2 44100 48000
+1: USB Audio CODEC 2/0 12000 48000
+8: QMX Transceiver 2/0 12000 48000
+"""
+
+
+def test_parse_device_list():
+    assert parse_device_list(SND_LIST) == [
+        (0, "HDA Intel PCH"), (1, "USB Audio CODEC"), (8, "QMX Transceiver"),
+    ]
+
+
+def test_resolve_card_desc_substring_case_insensitive():
+    devices = parse_device_list(SND_LIST)
+    assert resolve_card_desc("receiver:20m", "qmx", devices) == 8
+    assert resolve_card_desc("receiver:20m", "CODEC", devices) == 1
+
+
+def test_resolve_card_desc_no_match():
+    with pytest.raises(ConfigError, match="matched no audio device"):
+        resolve_card_desc("receiver:20m", "Flex", parse_device_list(SND_LIST))
+
+
+def test_resolve_card_desc_ambiguous():
+    devices = [(1, "USB Audio CODEC"), (2, "USB Audio Device")]
+    with pytest.raises(ConfigError, match="matched multiple"):
+        resolve_card_desc("receiver:20m", "USB Audio", devices)
+
+
 def test_sdr_sdrip_builds_ip_mhz():
     r = _one_receiver(
         "[receiver:40m]\nfreq = 7074000\ninput = sdrip\nip = 192.168.3.100"
@@ -108,18 +157,11 @@ def test_file_receiver_expands_tilde():
     assert "~" not in r.ft8mon_args()[2]
 
 
-def test_args_appended():
-    r = _one_receiver(
-        "[receiver:40m]\nfreq = 7074000\ninput = sdrip\nip = 10.0.0.1\nargs = -only 1500"
-    )
-    assert r.ft8mon_args() == ["-card", "sdrip", "10.0.0.1,7.074", "-only", "1500"]
-
-
 # --- shared SDR (sdr = yes / [sdr]) ---------------------------------------
 
 def _sdr_cfg(receivers, sdr_body="driver = hackrf\n", storage="/var/lib/watr"):
     return loads(
-        "[monitor]\ngrid = FN19\n[collector]\naddress = d\n"
+        "[monitor]\ngrid = FN19\nworking_dir = /tmp/watchersattherim\n[collector]\naddress = d\n"
         f"[storage]\ndir = {storage}\n"
         f"[sdr]\n{sdr_body}"
         f"{receivers}"
@@ -130,15 +172,15 @@ def test_stream_receiver_builds_card_stream():
     c = _sdr_cfg("[receiver:40m-ft8]\nfreq = 7074000\nsdr = yes\n")
     r = c.receivers[0]
     assert r.kind == "sdr"
-    assert r.path == "/var/lib/watr/run/40m-ft8.fifo"
-    assert r.ft8mon_args() == ["-card", "stream", "/var/lib/watr/run/40m-ft8.fifo"]
+    assert r.path == "/tmp/watchersattherim/sdrfanout/40m-ft8.fifo"
+    assert r.ft8mon_args() == ["-card", "stream", "/tmp/watchersattherim/sdrfanout/40m-ft8.fifo"]
 
 
 def test_stream_wspr_receiver_args():
     c = _sdr_cfg("[receiver:40m-wspr]\nmode = wspr\nfreq = 7038600\nsdr = yes\n")
     r = c.receivers[0]
     assert r.wsprmon_args() == [
-        "-hz", "-card", "stream", "/var/lib/watr/run/40m-wspr.fifo"
+        "-hz", "-card", "stream", "/tmp/watchersattherim/sdrfanout/40m-wspr.fifo"
     ]
 
 
@@ -152,16 +194,45 @@ def test_sdr_section_load_and_defaults():
     assert s.driver == "hackrf" and s.gain == "40" and s.ppm == -1.4
     assert s.guard == 10000 and s.buffer == 1.0 and s.path == "sdrfanout"
     assert s.rate is None and s.center is None and s.antenna is None
-    assert s.runtime_dir == "/v/run"
+    assert s.working_dir == "/tmp/watchersattherim"   # inherits [monitor] working_dir
 
 
-def test_sdr_runtime_dir_override():
+def test_sdr_center_edge():
+    c = _sdr_cfg("[receiver:x]\nfreq = 7074000\nsdr = yes\n",
+                 sdr_body="driver = hackrf\ncenter = edge\n")
+    assert c.sdr.center == "edge"
+    assert "-center" in (a := sdrfanout_argv(c.sdr, c.receivers))
+    assert a[a.index("-center") + 1] == "edge"
+
+
+def test_sdr_center_hz():
+    c = _sdr_cfg("[receiver:x]\nfreq = 7074000\nsdr = yes\n",
+                 sdr_body="driver = hackrf\ncenter = 7050000\n")
+    assert c.sdr.center == 7050000
+    a = sdrfanout_argv(c.sdr, c.receivers)
+    assert a[a.index("-center") + 1] == "7050000"
+
+
+def test_sdr_center_auto_is_none():
+    c = _sdr_cfg("[receiver:x]\nfreq = 7074000\nsdr = yes\n",
+                 sdr_body="driver = hackrf\ncenter = auto\n")
+    assert c.sdr.center is None
+    assert "-center" not in sdrfanout_argv(c.sdr, c.receivers)
+
+
+def test_sdr_center_invalid():
+    with pytest.raises(ConfigError, match="center must be"):
+        _sdr_cfg("[receiver:x]\nfreq = 7074000\nsdr = yes\n",
+                 sdr_body="driver = hackrf\ncenter = middle\n")
+
+
+def test_sdr_working_dir_override():
     c = _sdr_cfg(
         "[receiver:x]\nfreq = 7074000\nsdr = yes\n",
-        sdr_body="runtime_dir = /run/watr\n",
+        sdr_body="working_dir = /run/watr\n",
     )
-    assert c.sdr.runtime_dir == "/run/watr"
-    assert c.receivers[0].path == "/run/watr/x.fifo"
+    assert c.sdr.working_dir == "/run/watr"
+    assert c.receivers[0].path == "/run/watr/sdrfanout/x.fifo"
 
 
 def test_no_sdr_section_is_none():
@@ -204,8 +275,8 @@ def test_sdrfanout_argv_channel_plan():
     assert sdrfanout_argv(c.sdr, streams) == [
         "sdrfanout", "-driver", "hackrf", "-gain", "40",
         "-guard", "10000", "-ppm", "-1.4", "-buffer", "1.0",
-        "-ch", "7038600:/v/run/40m-wspr.fifo",
-        "-ch", "7074000:/v/run/40m-ft8.fifo",
+        "-ch", "7038600:/tmp/watchersattherim/sdrfanout/40m-wspr.fifo",
+        "-ch", "7074000:/tmp/watchersattherim/sdrfanout/40m-ft8.fifo",
     ]
 
 
@@ -221,9 +292,9 @@ def test_sdrfanout_argv_arbitrary_channel_count():
     argv = sdrfanout_argv(c.sdr, streams)
     chs = [argv[i + 1] for i, a in enumerate(argv) if a == "-ch"]
     assert chs == [
-        "7038600:/v/run/a.fifo",
-        "7074000:/v/run/b.fifo",
-        "10138700:/v/run/c.fifo",
+        "7038600:/tmp/watchersattherim/sdrfanout/a.fifo",
+        "7074000:/tmp/watchersattherim/sdrfanout/b.fifo",
+        "10138700:/tmp/watchersattherim/sdrfanout/c.fifo",
     ]
     assert len({r.path for r in streams}) == 3      # distinct FIFOs
 
@@ -317,6 +388,46 @@ def test_snr_ceiling_miles_converted_and_merged():
 def test_snr_ceiling_bad_entry_errors():
     with pytest.raises(ConfigError, match="distance:snr"):
         _rx_ceiling("distance_snr_threshold_km = 13000\n")   # missing :snr
+
+
+# --- working dirs (tmpfs by default, [sdr]/[wsprmon] inherit [monitor]) ----
+
+def _wd_cfg(monitor_extra="", extra=""):
+    return loads(f"[monitor]\ngrid = FN19\n{monitor_extra}"
+                 "[receiver:20m]\nfreq = 14074000\ncard = 8\n"
+                 f"[collector]\naddress = d\n{extra}")
+
+
+def test_monitor_working_dir_defaults_to_tmpfs():
+    c = loads(MINIMAL)
+    if os.path.isdir("/dev/shm") and os.access("/dev/shm", os.W_OK):
+        assert c.monitor.working_dir == "/dev/shm/watchersattherim"
+    # wsprmon inherits the monitor scratch base by default
+    assert c.wsprmon_working_dir == c.monitor.working_dir
+
+
+def test_monitor_working_dir_falls_back_to_storage_without_tmpfs(monkeypatch):
+    real_access = os.access
+    monkeypatch.setattr(os, "access",
+                        lambda p, m: False if p == "/dev/shm" else real_access(p, m))
+    c = loads(MINIMAL)
+    assert c.monitor.working_dir == os.path.expanduser("~/.watchersattherim")
+
+
+def test_monitor_working_dir_explicit_expands_tilde():
+    c = _wd_cfg(monitor_extra="working_dir = ~/scratch\n")
+    assert c.monitor.working_dir == os.path.expanduser("~/scratch")
+
+
+def test_wsprmon_working_dir_inherits_monitor():
+    c = _wd_cfg(monitor_extra="working_dir = /scratch\n")
+    assert c.wsprmon_working_dir == "/scratch"
+
+
+def test_wsprmon_working_dir_explicit_override():
+    c = _wd_cfg(monitor_extra="working_dir = /scratch\n",
+                extra="[wsprmon]\nworking_dir = /var/wd\n")
+    assert c.wsprmon_working_dir == "/var/wd"
 
 
 # --- mode / band / wsprmon ------------------------------------------------

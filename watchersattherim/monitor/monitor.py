@@ -15,7 +15,8 @@ from typing import Callable, Optional
 
 from .. import __version__
 from .cache import CallsignCache
-from .config import Config, Receiver, sdrfanout_argv
+from .config import (Config, Receiver, list_audio_devices, resolve_card_desc,
+                     sdrfanout_argv)
 from .driver import ReceiverDriver
 from .ft8_pipeline import ingest as ft8_ingest
 from .wspr_pipeline import ingest as wspr_ingest
@@ -175,8 +176,8 @@ class Monitor:
         if not streams or self.config.sdr is None:
             return None
         sdr = self.config.sdr
-        os.makedirs(sdr.runtime_dir, exist_ok=True)
         for r in streams:
+            os.makedirs(os.path.dirname(r.path), exist_ok=True)
             try:
                 os.mkfifo(r.path)
             except FileExistsError:
@@ -187,7 +188,26 @@ class Monitor:
             log_command=self.config.monitor.debug,
         )
 
+    def _resolve_cards(self) -> None:
+        """Resolve any ``card = DESC`` receivers to a device number via the decoder's -list.
+
+        A receiver carries an unresolved ``card_desc`` until here, where we run the
+        decoder its mode uses (wsprmon for wspr, else ft8mon) with ``-list`` and match
+        the description against the listed device names. The ``-list`` output is cached
+        per binary so two receivers off the same decoder enumerate the devices once.
+        """
+        listed: dict[str, list[tuple[int, str]]] = {}
+        for r in self.config.receivers:
+            if r.kind != "audio" or r.card_desc is None:
+                continue
+            binary = (self.config.wsprmon_path if r.mode == "wspr"
+                      else self.config.ft8mon_path)
+            if binary not in listed:
+                listed[binary] = list_audio_devices(binary)
+            r.card = resolve_card_desc(f"receiver:{r.name}", r.card_desc, listed[binary])
+
     def run(self) -> None:
+        self._resolve_cards()
         # Start the shared SDR first (if any), so its FIFOs exist and it is writing
         # before the decoders open them. Decoders are decoupled from its restarts:
         # StreamSoundIn resyncs on the wsf magic after a gap, and a long outage trips
@@ -199,10 +219,7 @@ class Monitor:
 
         for receiver in self.config.receivers:
             if receiver.mode == "wspr":
-                workdir = os.path.join(
-                    os.path.expanduser(self.config.storage.dir),
-                    "wsprmon", receiver.name,
-                )
+                workdir = os.path.join(self.config.wsprmon_working_dir, receiver.name)
                 os.makedirs(workdir, exist_ok=True)
                 argv = [self.config.wsprmon_path,
                         *receiver.wsprmon_args(self.config.wsprd_path, workdir)]

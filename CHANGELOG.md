@@ -1,5 +1,14 @@
 ## Changelog
 
+### Version 0.4.3
+
+- added support for specifying an audio device by text description in monitor config (ex. `[receiver:NAME] card = QMX`)
+- added monitor config `[monitor] working_dir` defaulting to tmpfs `/dev/shm` to reduce SD card wear on single board computers
+- added monitor config `[wsprmon] working_dir` defaulting to `[monitor] working_dir`
+- renamed `[sdr] runtime_dir` to `[sdr] working_dir` and defaulting to `[monitor] working_dir`
+- removed monitor config `[receiver:NAME] args` which would cause `ft8mon` and `wsprmon` to not run if specified
+- updated example monitor config file
+
 ### Version 0.4.2
 
 - added per-receiver `distance_snr_threshold_km` and `distance_snr_threshold_mi` to drop fabricated decodes too strong for their distance (see example config file)
