@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Stand-in for the external ft8mon binary, used only by the local pipeline test.
+
+Emits FT8 decode lines in ft8mon's stdout format so the real monitor can parse
+them, build observations, and send telemetry. All arguments (the real ft8mon
+takes -card and friends) are ignored; this only needs to produce parseable
+decode lines. The monitor timestamps observations with its own clock, so the
+HHMMSS field here is cosmetic.
+"""
+
+import sys
+import time
+
+# Distinct transmitters so the collector stores separate observations rather
+# than deduping them. Grids are near the monitor (FN19) to clear distance checks.
+CALLS = [
+    ("KF9UG", "EN71"),
+    ("W1AW", "FN31"),
+    ("K5TR", "EM00"),
+    ("VE3ABC", "FN03"),
+    ("N0XYZ", "EN34"),
+]
+
+
+def main() -> int:
+    i = 0
+    while True:
+        call, grid = CALLS[i % len(CALLS)]
+        hhmmss = time.strftime("%H%M%S", time.gmtime())
+        audio = 800.0 + (i % len(CALLS)) * 200.0
+        # columns: HHMMSS  SNR  bits  DT  audio_hz  message
+        print(f"{hhmmss}  -7 147  0.2  {audio:.1f} CQ {call} {grid}", flush=True)
+        i += 1
+        time.sleep(1.5)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (KeyboardInterrupt, BrokenPipeError):
+        sys.exit(0)

@@ -20,6 +20,7 @@ from typing import Optional
 
 from ..common import lxmf
 from ..common.protocol import APP_QUERY, APP_REPLY
+from ..common.wire import decode, encode
 
 DEFAULT_IDENTITY = "~/.watchersattherim/query/identity"
 
@@ -53,8 +54,9 @@ class LxmfQueryClient:
         fields = getattr(message, "fields", None) or {}
         if fields.get(LXMF.FIELD_CUSTOM_TYPE) == APP_REPLY:
             data = fields.get(LXMF.FIELD_CUSTOM_DATA)
-            if isinstance(data, dict):
-                self._replies[data.get("request_id")] = data
+            if isinstance(data, (bytes, bytearray)):
+                reply = decode(data)
+                self._replies[reply.get("request_id")] = reply
                 self._event.set()
 
     def query(self, collector: bytes, cmd: str, params: dict, *, timeout: float = 30) -> dict:
@@ -71,7 +73,7 @@ class LxmfQueryClient:
         request_id = os.urandom(8).hex()
         fields = {
             LXMF.FIELD_CUSTOM_TYPE: APP_QUERY,
-            LXMF.FIELD_CUSTOM_DATA: build_query(cmd, params, request_id),
+            LXMF.FIELD_CUSTOM_DATA: encode(build_query(cmd, params, request_id)),
         }
         lxmf.send(self.router, self.source, dest, fields=fields)
 

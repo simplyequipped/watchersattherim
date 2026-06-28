@@ -54,7 +54,8 @@ def test_minimal_applies_defaults():
     assert c.cache.enabled is True and c.cache.persist is False
     assert c.cache.max_entries == 10000 and c.cache.ttl_sec == 7200
     assert c.collector.address == "abc123def456"
-    assert c.collector.send_interval == 120 and c.collector.delivery == "direct"
+    assert c.collector.send_interval == 300 and c.collector.delivery == "direct"
+    assert c.collector.min_send_interval == 60
     assert c.collector.send_empty_batches is False
     assert c.storage.dir == "~/.watchersattherim"
 
@@ -561,6 +562,21 @@ def test_sdrip_requires_ip():
 def test_propagated_requires_node():
     with pytest.raises(ConfigError, match="propagation_node"):
         loads(MINIMAL + "\ndelivery = propagated\n")
+
+
+def test_send_interval_accepts_duration():
+    c = loads(MINIMAL + "\nsend_interval = 5m\n")
+    assert c.collector.send_interval == 300
+
+
+def test_send_interval_below_floor_rejected():
+    with pytest.raises(ConfigError, match="below min_send_interval"):
+        loads(MINIMAL + "\nsend_interval = 30\n")
+
+
+def test_min_send_interval_override_allows_faster():
+    c = loads(MINIMAL + "\nsend_interval = 30\nmin_send_interval = 10\n")
+    assert c.collector.send_interval == 30 and c.collector.min_send_interval == 10
 
 
 # --- shipped example files ------------------------------------------------

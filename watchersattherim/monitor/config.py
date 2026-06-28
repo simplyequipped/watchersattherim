@@ -176,7 +176,8 @@ class Cache:
 @dataclass
 class Collector:
     address: str
-    send_interval: int = 120   # seconds between batches (>= the 120 s WSPR slot)
+    send_interval: int = 300        # seconds between batches (accepts "5m" etc.)
+    min_send_interval: int = 60      # floor send_interval may not go below
     delivery: str = "direct"
     propagation_node: Optional[str] = None
     max_pending_observations: int = 50000
@@ -586,9 +587,17 @@ def _collector(cp: configparser.ConfigParser) -> Collector:
     node = cp.get("collector", "propagation_node", fallback=None)
     if delivery == "propagated" and not node:
         raise ConfigError("[collector] delivery=propagated requires propagation_node")
+    send_interval = parse_duration(cp.get("collector", "send_interval", fallback="5m"))
+    min_send_interval = parse_duration(cp.get("collector", "min_send_interval", fallback="60"))
+    if send_interval < min_send_interval:
+        raise ConfigError(
+            f"[collector] send_interval ({send_interval}s) is below "
+            f"min_send_interval ({min_send_interval}s)"
+        )
     return Collector(
         address=addr,
-        send_interval=cp.getint("collector", "send_interval", fallback=120),
+        send_interval=send_interval,
+        min_send_interval=min_send_interval,
         delivery=delivery,
         propagation_node=node,
         max_pending_observations=cp.getint(

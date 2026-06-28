@@ -1,5 +1,17 @@
 ## Changelog
 
+### Version 0.5.0
+
+- added isolated/local RNS network test script `tests/rns/run_pipeline.py`
+- added `[collector] min_send_interval` which sets `send_interval` floor to prevent unintentional network flood
+- changed LXMF payloads to gzip'd msgpack to reduce RNS traffic
+- changed `[collector] send_interval` default from 120s to 5m to reduce RNS traffic
+- changed `[collector] send_interval` to accept durations like `5m`
+- removed version from LXMF field type (telemetry version unchanged)
+- updated example monitor config
+
+Note: changes in this release reduce RNS traffic by 10-20x (more observations per batch compress more) and should support a couple dozen monitors running over typical (5kbps) LoRa/RNode network segments.
+
 ### Version 0.4.3
 
 - added support for specifying an audio device by text description in monitor config (ex. `[receiver:NAME] card = QMX`)

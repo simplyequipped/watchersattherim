@@ -5,6 +5,6 @@ Pure data: no imports, no Reticulum. These are the wire contract that the
 monitor, collector, and query client must agree on.
 """
 
-APP_OBS = b"watchersattherim/observations/1"    # telemetry batch (monitor -> collector)
-APP_QUERY = b"watchersattherim/query/1"          # query envelope (client -> collector)
-APP_REPLY = b"watchersattherim/reply/1"          # query reply (collector -> client)
+APP_OBS = b"watchersattherim/observations"    # telemetry batch (monitor -> collector)
+APP_QUERY = b"watchersattherim/query"          # query envelope (client -> collector)
+APP_REPLY = b"watchersattherim/reply"          # query reply (collector -> client)

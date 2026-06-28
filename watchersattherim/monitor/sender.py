@@ -1,8 +1,8 @@
 """The monitor's LXMF sender (telemetry -> collector).
 
-Untested in CI (needs a running Reticulum instance). The batch travels in an LXMF
-custom field; LXMF handles the msgpack wire encoding. Transport mechanics live in
-``common.lxmf``.
+Untested in CI (needs a running Reticulum instance). The batch is encoded to
+gzipped msgpack bytes and travels in an LXMF custom field. Transport mechanics
+live in ``common.lxmf``.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from typing import Callable
 
 from ..common import lxmf
 from ..common.protocol import APP_OBS
+from ..common.wire import encode
 from .config import Config
 
 
@@ -37,7 +38,8 @@ class LiveLxmfSender:
             dest = lxmf.resolve(self.dest_hash)
             if dest is None:
                 return False
-            fields = {LXMF.FIELD_CUSTOM_TYPE: self.app_type, LXMF.FIELD_CUSTOM_DATA: batch}
+            fields = {LXMF.FIELD_CUSTOM_TYPE: self.app_type,
+                      LXMF.FIELD_CUSTOM_DATA: encode(batch)}
             lxmf.send(self.router, self.source, dest,
                       fields=fields, method=self.desired_method)
             return True

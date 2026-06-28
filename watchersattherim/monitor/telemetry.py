@@ -1,19 +1,16 @@
 """Build monitor->collector telemetry batches.
 
-Pure and dependency-light: accumulates observations into a window, builds the
-telemetry body, and encodes it with the umsgpack that ships with RNS (the same
-encoder LXMF uses), so no extra wire-format dependency.
+Accumulates observations into a window and builds the telemetry body. The wire
+codec (msgpack then gzip) lives in ``common.wire``, shared with the query path.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from RNS.vendor import umsgpack
-
 from .observations import Observation, grid_to_latlon
 
-TELEMETRY_VERSION = 1
+TELEMETRY_VERSION = 1   # batch schema version, separate from the wire codec
 
 
 def monitor_meta(grid: str, sw_version: str,
@@ -97,11 +94,3 @@ def build_batch(
         },
         "observations": observations,
     }
-
-
-def encode(batch: dict) -> bytes:
-    return umsgpack.packb(batch)
-
-
-def decode(payload: bytes) -> dict:
-    return umsgpack.unpackb(payload)

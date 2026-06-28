@@ -1,8 +1,9 @@
 """Tests for telemetry batching, encoding, and the pending-queue flush logic."""
 
+from watchersattherim.common.wire import decode, encode
 from watchersattherim.monitor.observations import Observation
 from watchersattherim.monitor.telemetry import (
-    TelemetryBatcher, build_batch, decode, encode, monitor_meta,
+    TelemetryBatcher, build_batch, monitor_meta,
 )
 from watchersattherim.monitor.transport import PendingQueue, flush_window
 
@@ -69,6 +70,21 @@ def test_encode_decode_round_trip():
     rows = [_obs_row()]
     batch = build_batch(monitor_meta("FN19", "sw"), 100, 160, rows)
     assert decode(encode(batch)) == batch
+
+
+def test_encode_is_gzip_and_deterministic():
+    batch = build_batch(monitor_meta("FN19", "sw"), 100, 160, [_obs_row()])
+    payload = encode(batch)
+    assert isinstance(payload, bytes)
+    assert payload[:2] == b"\x1f\x8b"           # gzip magic
+    assert encode(batch) == payload             # mtime=0 keeps it stable
+
+
+def test_encode_compresses_repetitive_batch():
+    rows = [_obs_row() for _ in range(200)]
+    batch = build_batch(monitor_meta("FN19", "sw"), 100, 160, rows)
+    from RNS.vendor import umsgpack
+    assert len(encode(batch)) < len(umsgpack.packb(batch)) // 4
 
 
 def _obs_row():

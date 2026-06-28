@@ -6,8 +6,8 @@ types, distinguished by FIELD_CUSTOM_TYPE:
 - telemetry  (``APP_OBS``)   -> validate + ingest the observation batch
 - query      (``APP_QUERY``) -> dispatch and reply with ``APP_REPLY``
 
-The telemetry type matches what the monitor's sender uses, so a monitor and
-collector interoperate over the same custom field.
+Each payload rides in FIELD_CUSTOM_DATA as gzipped msgpack (``common.wire``), the
+same codec the monitor and query client use, so the nodes interoperate.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import Callable
 from . import storage
 from ..common import lxmf
 from ..common.protocol import APP_OBS, APP_QUERY, APP_REPLY
+from ..common.wire import decode, encode
 from .admin import handle_admin_command
 from .commands import INTERNAL_ERROR, NOT_AUTHORIZED, CommandError, dispatch
 from .ingest import ingest_batch
@@ -45,10 +46,10 @@ class CollectorListener:
             ftype = fields.get(LXMF.FIELD_CUSTOM_TYPE)
             data = fields.get(LXMF.FIELD_CUSTOM_DATA)
             source = message.source_hash
-            if ftype == APP_OBS and isinstance(data, dict):
-                self._ingest(source, data)
-            elif ftype == APP_QUERY and isinstance(data, dict):
-                self._handle_query(source, data)
+            if ftype == APP_OBS and isinstance(data, (bytes, bytearray)):
+                self._ingest(source, decode(data))
+            elif ftype == APP_QUERY and isinstance(data, (bytes, bytearray)):
+                self._handle_query(source, decode(data))
             elif self._is_admin(source):
                 self._handle_admin(source, message)
         except Exception as e:  # noqa: BLE001
@@ -111,5 +112,5 @@ class CollectorListener:
         dest = lxmf.resolve(source)
         if dest is None:
             return
-        fields = {LXMF.FIELD_CUSTOM_TYPE: APP_REPLY, LXMF.FIELD_CUSTOM_DATA: envelope}
+        fields = {LXMF.FIELD_CUSTOM_TYPE: APP_REPLY, LXMF.FIELD_CUSTOM_DATA: encode(envelope)}
         lxmf.send(self.router, self.source, dest, fields=fields)

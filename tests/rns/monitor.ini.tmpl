@@ -1,0 +1,31 @@
+# Monitor config for the local pipeline test. Rendered to .run/monitor.ini with
+# the collector's address substituted. Paths are relative to test/rns.
+#
+# The receiver runs the stub ft8mon (fake_ft8mon) instead of a real SDR, so the
+# real monitor pipeline (parse -> observations -> telemetry -> LXMF) runs end to
+# end with no radio. send_interval/min_send_interval are lowered so the test does
+# not wait minutes for a batch.
+
+[monitor]
+grid = FN19
+working_dir = .run/monitor/work
+
+[receiver:20m]
+freq = 14074000
+card = 0
+
+[ft8mon]
+path = __FT8MON__
+
+[collector]
+address = __COLLECTOR_ADDR__
+send_interval = 5
+min_send_interval = 5
+delivery = direct
+send_empty_batches = false
+
+[storage]
+dir = .run/monitor
+
+[reticulum]
+config_dir = .run/reticulum/monitor
